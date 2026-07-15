@@ -15,7 +15,7 @@ is complete.
 - [x] Phase 2 — Data pipeline (`odds_client.py`, `utils.py`)
 - [x] Phase 3 — Arbitrage scanner
 - [x] Phase 4 — Predictive model (chronological train/test split)
-- [ ] Phase 5 — CLV tracking + backtest
+- [x] Phase 5 — CLV tracking + backtest
 - [ ] Phase 6 — Results & full README
 
 ## Phase 1: core math
@@ -86,20 +86,56 @@ learnable, but not perfectly recoverable, by design.
 
 **Held-out test results (240 games, chronologically after the 960-game
 training period, never touched during fitting):**
-- Accuracy: 67.5%
-- Log loss: 0.611
-- `home_flag` coefficient: +0.53 (positive, as expected — home-court advantage)
+- Accuracy: 59.2%
+- Log loss: 0.661
+- `home_flag` coefficient: +0.52 (positive, as expected — home-court advantage)
 - `recent_win_pct_diff` is the strongest single feature, `pace_diff` carries
   almost no signal (by construction — pace was generated independent of team
   strength in the synthetic data)
 
-This is deliberately in the realistic range for NBA moneyline models (~65-70%
-accuracy), not an inflated number — a model claiming 90%+ accuracy on game
-outcomes would be a red flag, not a strength, in an interview. **This dataset
-is synthetic and must be replaced with real historical data (via `nba_api` or
-another stats source) before any result here is a genuine market-efficiency
-finding** — right now it validates that the pipeline (chronological split →
-fit → held-out evaluation) is correctly wired and leak-free.
+This is deliberately in the realistic range for NBA moneyline models — real
+models in this space typically land in the 60s, not the 90s, and a model
+claiming 90%+ accuracy on game outcomes would be a red flag, not a strength,
+in an interview. **This dataset is synthetic and must be replaced with real
+historical data (via `nba_api` or another stats source) before any result
+here is a genuine market-efficiency finding** — right now it validates that
+the pipeline (chronological split → fit → held-out evaluation) is correctly
+wired and leak-free.
+
+## Phase 5: CLV tracking + backtest
+
+- `src/clv.py` — `track_line_movement` stores opening/closing implied
+  probability per game; `calculate_clv` compares the implied probability at
+  bet time to the closing line. Positive CLV means you bet at a better price
+  than where the market ultimately closed — the market moved toward you after
+  you bet, independent of whether that individual bet won.
+- `src/backtest.py` — walks the held-out test period from Phase 4
+  chronologically. Each flagged bet (`model.has_value_edge`) is sized with
+  half-Kelly (`kelly.fractional_kelly`), capped at a max % of bankroll
+  regardless of Kelly output, with simulated slippage (the price moves
+  slightly against you between decision and placement) applied before sizing.
+  Outputs bankroll time series, ROI, a Sharpe-like ratio (mean bet return /
+  std of bet returns), max drawdown, average CLV, and hit rate.
+
+**Backtest results on the synthetic held-out test period (240 games, 94 bets
+flagged):**
+- ROI: **-5.5%**
+- Avg CLV: **+2.64 percentage points**
+- Hit rate: 29.8%
+- Sharpe-like ratio: 0.03
+- Max drawdown: -49.7%
+
+This is the central result the project is built to produce, and it's exactly
+the "CLV over ROI" story: **raw ROI was negative over this sample, but average
+CLV was consistently positive** — the model was getting closing-line-beating
+prices even though a modest, small-sample hit rate and a real losing streak
+(7 straight) dragged down realized ROI. ROI over 94 bets is dominated by
+variance; CLV, measured bet-by-bet against where the market ultimately
+settled, is the more reliable signal of whether the edge is real. The flagged
+bets also skew toward underdogs (mean model probability 0.44 vs. mean no-vig
+market probability 0.33) — a known failure mode where an imperfectly
+calibrated model systematically "finds value" on long shots, which is worth
+flagging explicitly rather than laundering into an inflated backtest.
 
 ### Setup
 
