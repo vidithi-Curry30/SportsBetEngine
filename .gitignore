@@ -7,5 +7,7 @@ venv/
 .venv/
 data/raw/*
 !data/raw/.gitkeep
+!data/raw/basketball_nba_synthetic_sample.json
 data/processed/*
 !data/processed/.gitkeep
+!data/processed/nba_games_synthetic.csv

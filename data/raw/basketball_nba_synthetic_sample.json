@@ -1,0 +1,512 @@
+[
+  {
+    "id": "synthetic_game_1",
+    "sport_key": "basketball_nba",
+    "commence_time": "2026-01-15T00:30:00Z",
+    "home_team": "Boston Celtics",
+    "away_team": "New York Knicks",
+    "bookmakers": [
+      {
+        "key": "draftkings",
+        "title": "DraftKings",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Boston Celtics",
+                "price": -180
+              },
+              {
+                "name": "New York Knicks",
+                "price": 150
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "fanduel",
+        "title": "FanDuel",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Boston Celtics",
+                "price": -185
+              },
+              {
+                "name": "New York Knicks",
+                "price": 155
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "betmgm",
+        "title": "BetMGM",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Boston Celtics",
+                "price": -186
+              },
+              {
+                "name": "New York Knicks",
+                "price": 152
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "caesars",
+        "title": "Caesars",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Boston Celtics",
+                "price": -179
+              },
+              {
+                "name": "New York Knicks",
+                "price": 145
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "synthetic_game_2",
+    "sport_key": "basketball_nba",
+    "commence_time": "2026-01-16T00:30:00Z",
+    "home_team": "Golden State Warriors",
+    "away_team": "Los Angeles Lakers",
+    "bookmakers": [
+      {
+        "key": "draftkings",
+        "title": "DraftKings",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Golden State Warriors",
+                "price": 103
+              },
+              {
+                "name": "Los Angeles Lakers",
+                "price": -125
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "fanduel",
+        "title": "FanDuel",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Golden State Warriors",
+                "price": 104
+              },
+              {
+                "name": "Los Angeles Lakers",
+                "price": -123
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "betmgm",
+        "title": "BetMGM",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Golden State Warriors",
+                "price": -102
+              },
+              {
+                "name": "Los Angeles Lakers",
+                "price": -123
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "caesars",
+        "title": "Caesars",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Golden State Warriors",
+                "price": 103
+              },
+              {
+                "name": "Los Angeles Lakers",
+                "price": -123
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "synthetic_game_3",
+    "sport_key": "basketball_nba",
+    "commence_time": "2026-01-17T00:30:00Z",
+    "home_team": "Denver Nuggets",
+    "away_team": "Oklahoma City Thunder",
+    "bookmakers": [
+      {
+        "key": "draftkings",
+        "title": "DraftKings",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Denver Nuggets",
+                "price": -141
+              },
+              {
+                "name": "Oklahoma City Thunder",
+                "price": 111
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "fanduel",
+        "title": "FanDuel",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Denver Nuggets",
+                "price": -137
+              },
+              {
+                "name": "Oklahoma City Thunder",
+                "price": 113
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "betmgm",
+        "title": "BetMGM",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Denver Nuggets",
+                "price": -139
+              },
+              {
+                "name": "Oklahoma City Thunder",
+                "price": 118
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "caesars",
+        "title": "Caesars",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Denver Nuggets",
+                "price": -140
+              },
+              {
+                "name": "Oklahoma City Thunder",
+                "price": 116
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "synthetic_game_4",
+    "sport_key": "basketball_nba",
+    "commence_time": "2026-01-18T00:30:00Z",
+    "home_team": "Milwaukee Bucks",
+    "away_team": "Philadelphia 76ers",
+    "bookmakers": [
+      {
+        "key": "draftkings",
+        "title": "DraftKings",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Milwaukee Bucks",
+                "price": -148
+              },
+              {
+                "name": "Philadelphia 76ers",
+                "price": 125
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "fanduel",
+        "title": "FanDuel",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Milwaukee Bucks",
+                "price": -156
+              },
+              {
+                "name": "Philadelphia 76ers",
+                "price": 123
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "betmgm",
+        "title": "BetMGM",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Milwaukee Bucks",
+                "price": -152
+              },
+              {
+                "name": "Philadelphia 76ers",
+                "price": 123
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "caesars",
+        "title": "Caesars",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Milwaukee Bucks",
+                "price": -157
+              },
+              {
+                "name": "Philadelphia 76ers",
+                "price": 129
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "synthetic_game_5",
+    "sport_key": "basketball_nba",
+    "commence_time": "2026-01-19T00:30:00Z",
+    "home_team": "Miami Heat",
+    "away_team": "Dallas Mavericks",
+    "bookmakers": [
+      {
+        "key": "draftkings",
+        "title": "DraftKings",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Miami Heat",
+                "price": 118
+              },
+              {
+                "name": "Dallas Mavericks",
+                "price": -139
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "fanduel",
+        "title": "FanDuel",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Miami Heat",
+                "price": 122
+              },
+              {
+                "name": "Dallas Mavericks",
+                "price": -146
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "betmgm",
+        "title": "BetMGM",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Miami Heat",
+                "price": 115
+              },
+              {
+                "name": "Dallas Mavericks",
+                "price": -140
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "caesars",
+        "title": "Caesars",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Miami Heat",
+                "price": 118
+              },
+              {
+                "name": "Dallas Mavericks",
+                "price": -146
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "synthetic_game_6",
+    "sport_key": "basketball_nba",
+    "commence_time": "2026-01-20T00:30:00Z",
+    "home_team": "Phoenix Suns",
+    "away_team": "Minnesota Timberwolves",
+    "bookmakers": [
+      {
+        "key": "draftkings",
+        "title": "DraftKings",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Phoenix Suns",
+                "price": -114
+              },
+              {
+                "name": "Minnesota Timberwolves",
+                "price": -106
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "fanduel",
+        "title": "FanDuel",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Phoenix Suns",
+                "price": -119
+              },
+              {
+                "name": "Minnesota Timberwolves",
+                "price": -104
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "betmgm",
+        "title": "BetMGM",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Phoenix Suns",
+                "price": -113
+              },
+              {
+                "name": "Minnesota Timberwolves",
+                "price": -109
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "key": "caesars",
+        "title": "Caesars",
+        "markets": [
+          {
+            "key": "h2h",
+            "outcomes": [
+              {
+                "name": "Phoenix Suns",
+                "price": -117
+              },
+              {
+                "name": "Minnesota Timberwolves",
+                "price": -107
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]
