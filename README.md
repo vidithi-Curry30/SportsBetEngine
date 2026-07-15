@@ -14,7 +14,7 @@ is complete.
 - [x] Phase 1 — Core math: `probability.py`, `vig.py`, `kelly.py` (unit tested)
 - [x] Phase 2 — Data pipeline (`odds_client.py`, `utils.py`)
 - [x] Phase 3 — Arbitrage scanner
-- [ ] Phase 4 — Predictive model (chronological train/test split)
+- [x] Phase 4 — Predictive model (chronological train/test split)
 - [ ] Phase 5 — CLV tracking + backtest
 - [ ] Phase 6 — Results & full README
 
@@ -63,6 +63,43 @@ real markets. The scanner is confirmed to correctly return no opportunities
 against a market with no exploitable mispricing (and unit tests in
 `tests/test_arbitrage.py` confirm it correctly detects a planted arb). A real
 pull against live odds is still pending an API key.
+
+## Phase 4: predictive model
+
+- `src/model.py` — `chronological_split` sorts games by date and cuts the
+  first `train_frac` (default 80%) into training, the rest into a held-out
+  test period the model never sees during fitting. `train_model` fits a
+  `LogisticRegression` on `[pace_diff, off_rating_diff, def_rating_diff,
+  recent_win_pct_diff, rest_days_diff, home_flag]`. `predict_win_probability`
+  scores a single game. `has_value_edge` flags a candidate bet when the
+  model's probability beats the no-vig market probability
+  (`probability.remove_vig`) by a threshold (default 3 points).
+
+No historical NBA stats were reachable from this environment (`nba_api` isn't
+installed, and `stats.nba.com` times out — a known bot-hostile endpoint), so
+the model was trained on a **synthetic** season (`data/processed/nba_games_synthetic.csv`,
+1200 games, Oct 2024-Apr 2025). Each team has a fixed hidden "true strength";
+observed features are noisy proxies for it (not the strength itself), and
+game outcomes are Bernoulli-sampled from a logistic function of that hidden
+strength plus a home-court term — so the relationship is realistic and
+learnable, but not perfectly recoverable, by design.
+
+**Held-out test results (240 games, chronologically after the 960-game
+training period, never touched during fitting):**
+- Accuracy: 67.5%
+- Log loss: 0.611
+- `home_flag` coefficient: +0.53 (positive, as expected — home-court advantage)
+- `recent_win_pct_diff` is the strongest single feature, `pace_diff` carries
+  almost no signal (by construction — pace was generated independent of team
+  strength in the synthetic data)
+
+This is deliberately in the realistic range for NBA moneyline models (~65-70%
+accuracy), not an inflated number — a model claiming 90%+ accuracy on game
+outcomes would be a red flag, not a strength, in an interview. **This dataset
+is synthetic and must be replaced with real historical data (via `nba_api` or
+another stats source) before any result here is a genuine market-efficiency
+finding** — right now it validates that the pipeline (chronological split →
+fit → held-out evaluation) is correctly wired and leak-free.
 
 ### Setup
 

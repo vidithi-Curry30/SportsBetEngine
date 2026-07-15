@@ -10,3 +10,4 @@ data/raw/*
 !data/raw/basketball_nba_synthetic_sample.json
 data/processed/*
 !data/processed/.gitkeep
+!data/processed/nba_games_synthetic.csv
