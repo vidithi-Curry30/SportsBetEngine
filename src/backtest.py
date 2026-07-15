@@ -5,6 +5,8 @@ Includes two realistic frictions: a hard cap on bet size regardless of Kelly
 output (books limit sharp bettors in practice), and simulated slippage (the
 odds offered move slightly against you between decision and placement).
 """
+from typing import Callable, Optional
+
 import numpy as np
 import pandas as pd
 
@@ -36,12 +38,13 @@ def _probability_to_american(prob: float) -> int:
 
 def run_backtest(
     test_df: pd.DataFrame,
-    model,
+    model=None,
     starting_bankroll: float = 10_000.0,
     kelly_fraction_mult: float = 0.5,
     max_bet_pct: float = 0.05,
     edge_threshold: float = 0.03,
     slippage_pct: float = 0.005,
+    probability_fn: Optional[Callable] = None,
 ) -> dict:
     """Run the backtest over `test_df` (the held-out period from model.chronological_split
     -- never games the model was trained on).
@@ -49,7 +52,17 @@ def run_backtest(
     Expects columns: date, team_a_win, market_odds_team_a, market_odds_team_b,
     closing_odds_team_a, plus the model's feature columns. Bets are only ever
     placed on team_a for simplicity; a symmetric team_b leg is a natural extension.
+
+    Pass either `model` (a fitted model.train_model() estimator, scored via
+    model.predict_win_probability) or `probability_fn` (any callable taking a
+    game row and returning a probability -- e.g. a calibration.IsotonicCalibrator)
+    to control how win probability is estimated.
     """
+    if probability_fn is None:
+        if model is None:
+            raise ValueError("run_backtest requires either model or probability_fn")
+        probability_fn = lambda game: predict_win_probability(model, game)  # noqa: E731
+
     sorted_df = test_df.sort_values("date").reset_index(drop=True)
 
     bankroll = starting_bankroll
@@ -57,7 +70,7 @@ def run_backtest(
     bet_log = []
 
     for _, game in sorted_df.iterrows():
-        model_prob = predict_win_probability(model, game)
+        model_prob = probability_fn(game)
         market_prob_a = american_to_probability(game["market_odds_team_a"])
         market_prob_b = american_to_probability(game["market_odds_team_b"])
         no_vig_prob_a, _ = remove_vig(market_prob_a, market_prob_b)
@@ -111,8 +124,15 @@ def _summarize(bankroll_series: list[float], bet_log: list[dict], starting_bankr
         sharpe_like_ratio = mean_return / std_return if std_return > 0 else 0.0
         avg_clv = float(np.mean([b["clv"] for b in bet_log]))
         hit_rate = sum(1 for b in bet_log if b["won"]) / len(bet_log)
+        total_pnl = sum(b["pnl"] for b in bet_log)
+        max_single_bet_pnl = max(b["pnl"] for b in bet_log)
+        # Share of total profit from the single best-performing bet -- a standard
+        # tail-risk check: a strategy whose entire profit rests on one outlier bet
+        # hasn't demonstrated a repeatable edge. None when there's no profit to share.
+        top_bet_pnl_share = (max_single_bet_pnl / total_pnl) if total_pnl > 0 else None
     else:
         sharpe_like_ratio = avg_clv = hit_rate = 0.0
+        top_bet_pnl_share = None
 
     return {
         "starting_bankroll": starting_bankroll,
@@ -122,6 +142,7 @@ def _summarize(bankroll_series: list[float], bet_log: list[dict], starting_bankr
         "max_drawdown": max_drawdown,
         "avg_clv": avg_clv,
         "hit_rate": hit_rate,
+        "top_bet_pnl_share": top_bet_pnl_share,
         "num_bets": len(bet_log),
         "num_games": len(bankroll_series) - 1,
         "bankroll_series": bankroll_series,

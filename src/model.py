@@ -29,6 +29,27 @@ def chronological_split(
     return train_df, test_df
 
 
+def chronological_split_train_calib_test(
+    games_df: pd.DataFrame,
+    train_frac: float = 0.8,
+    calib_frac_of_train: float = 0.15,
+    date_column: str = "date",
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Three-way chronological split: fit-training / calibration / test.
+
+    The test set is identical to what `chronological_split` would return (the
+    last `1 - train_frac` of games), so results computed on it remain directly
+    comparable to an uncalibrated run. The calibration set is carved out of the
+    *training* period (its most recent `calib_frac_of_train`) so a calibrator
+    fit on it has still never seen the test period.
+    """
+    train_df, test_df = chronological_split(games_df, train_frac, date_column)
+    calib_cut = int(len(train_df) * (1 - calib_frac_of_train))
+    fit_train_df = train_df.iloc[:calib_cut].copy()
+    calib_df = train_df.iloc[calib_cut:].copy()
+    return fit_train_df, calib_df, test_df
+
+
 def train_model(
     training_df: pd.DataFrame,
     feature_columns: list[str] = FEATURE_COLUMNS,

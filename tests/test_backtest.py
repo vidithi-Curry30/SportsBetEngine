@@ -120,3 +120,28 @@ class TestRunBacktest:
         result = run_backtest(df, model, edge_threshold=0.03, slippage_pct=0.0)
 
         assert result["avg_clv"] > 0
+
+    def test_top_bet_pnl_share_flags_tail_dominated_profit(self):
+        # One huge long-odds win plus several small losses: nearly all profit
+        # comes from a single bet, which top_bet_pnl_share should surface.
+        df = pd.concat(
+            [
+                make_test_df(n=1, market_odds=1000, closing_odds=1000, win=1),
+                make_test_df(n=5, market_odds=100, closing_odds=100, win=0),
+            ],
+            ignore_index=True,
+        )
+        model = DummyModel(prob=0.70)
+
+        result = run_backtest(df, model, edge_threshold=0.03, max_bet_pct=0.05)
+
+        assert result["top_bet_pnl_share"] is not None
+        assert result["top_bet_pnl_share"] > 1.0  # the one win outweighs the net losses
+
+    def test_top_bet_pnl_share_is_none_when_no_bets_placed(self):
+        df = make_test_df(market_odds=-110, closing_odds=-110)
+        model = DummyModel(prob=100 / 210)
+
+        result = run_backtest(df, model, edge_threshold=0.03)
+
+        assert result["top_bet_pnl_share"] is None

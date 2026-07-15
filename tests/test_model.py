@@ -4,6 +4,7 @@ import pytest
 from src.model import (
     FEATURE_COLUMNS,
     chronological_split,
+    chronological_split_train_calib_test,
     has_value_edge,
     predict_win_probability,
     train_model,
@@ -45,6 +46,30 @@ class TestChronologicalSplit:
         train_df, _ = chronological_split(df, train_frac=0.8)
 
         assert list(train_df["date"]) == sorted(train_df["date"])
+
+
+class TestChronologicalSplitTrainCalibTest:
+    def test_test_set_matches_two_way_split(self):
+        df = make_games_df(200)
+        _, _, test_df = chronological_split_train_calib_test(df, train_frac=0.8, calib_frac_of_train=0.15)
+        _, expected_test_df = chronological_split(df, train_frac=0.8)
+
+        assert list(test_df["date"]) == list(expected_test_df["date"])
+
+    def test_no_leakage_across_all_three_sets(self):
+        df = make_games_df(200)
+        fit_train_df, calib_df, test_df = chronological_split_train_calib_test(df)
+
+        assert fit_train_df["date"].max() <= calib_df["date"].min()
+        assert calib_df["date"].max() <= test_df["date"].min()
+
+    def test_sizes_sum_to_original_train_test_split(self):
+        df = make_games_df(200)
+        fit_train_df, calib_df, test_df = chronological_split_train_calib_test(df, train_frac=0.8)
+        train_df, expected_test_df = chronological_split(df, train_frac=0.8)
+
+        assert len(fit_train_df) + len(calib_df) == len(train_df)
+        assert len(test_df) == len(expected_test_df)
 
 
 class TestTrainModel:
