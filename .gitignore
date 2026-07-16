@@ -11,3 +11,4 @@ data/raw/*
 data/processed/*
 !data/processed/.gitkeep
 !data/processed/nba_games_synthetic.csv
+!data/processed/mlb_games_real.csv

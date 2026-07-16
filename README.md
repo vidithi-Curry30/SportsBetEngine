@@ -34,44 +34,52 @@ fully priced in the same information (i.e., before the closing line).
 | `src/baselines.py` | Naive predictors (trust the market, always home, coin flip) the model has to actually beat |
 | `src/calibration.py` | Reliability diagrams and isotonic/Platt recalibration — is the model's raw probability trustworthy enough to size bets with? |
 | `src/stats.py` | Bootstrap confidence intervals for backtest metrics on a small sample |
+| `src/mlb_stats_client.py` | Wraps the free, public MLB Stats API (`statsapi.mlb.com`) for real completed-game results |
+| `src/mlb_features.py` | Point-in-time (no-lookahead) feature engineering on real MLB games — see "Real MLB model" below |
 
-Two commands run it end-to-end:
+Three commands run it end-to-end:
 
 ```bash
 python scripts/fetch_odds.py --sport baseball_mlb   # pull live odds (needs ODDS_API_KEY in .env)
-python scripts/run_backtest.py                      # train, backtest, write results/
+python scripts/run_backtest.py                      # synthetic NBA: train, backtest, write results/
+python scripts/train_mlb_model.py                   # real MLB: fetch, train, evaluate, write results/
 ```
 
 ## A note on data
 
-**The Odds API is live and verified working** (`.env` + `ODDS_API_KEY`, free
-tier). NBA is off-season as of this writing — the regular season doesn't
-resume until October, so `basketball_nba` returns nothing from the odds
-endpoint right now — so the default sport is `baseball_mlb`, which is
-in-season, per the spec's fallback ("pick whatever US major sport is in
-season"). A real pull returned 4 live MLB games quoted across up to 9 books;
-see "Live data" below. Historical NBA game-level stats (`nba_api`,
-`stats.nba.com`) remain unreachable from this environment (`stats.nba.com`
-times out — a notoriously bot-hostile endpoint even normally), and the
-model's feature set is NBA-specific in any case, so the model and backtest
-below still run on **clearly labeled synthetic data**:
+**Two of the three real-data constraints from earlier are now resolved; one
+is a genuine, structural limit of the free tier, not a gap in the code:**
 
-- **Model + backtest**: `data/processed/nba_games_synthetic.csv` — 1200
-  games over a synthetic NBA season. Each team has a fixed hidden "true
-  strength"; observed features (pace, ratings, recent win %, rest days) are
-  *noisy proxies* for that strength, not the strength itself, and the market's
-  opening line is a noisier estimate of the true win probability than its
-  closing line — so there's a real, learnable, but imperfectly-exploitable
-  edge, by design, rather than a hand-planted one.
+| Piece | Status |
+|---|---|
+| Live odds (arbitrage scanner) | **Real.** The Odds API, verified with a real key (`.env` + `ODDS_API_KEY`). |
+| Win-probability model | **Real.** Trained on real MLB games from `statsapi.mlb.com` — see "Real MLB model" below. |
+| Backtest / CLV / Kelly sizing | **Still synthetic**, and will stay that way on the free tier — see why below. |
 
-**This must be swapped for real historical game data (via `nba_api` or an
-MLB-equivalent feature set) before the model/backtest numbers below are a
-genuine market-efficiency finding.** Right now they demonstrate that the
-pipeline — ingestion → no-vig probability → model → chronological split →
-Kelly sizing → backtest → CLV — is correctly wired and leak-free, which is
-what the code needs to be defensible in an interview regardless of the
-dataset behind it. The arbitrage scanner, by contrast, is now verified
-against real data directly — see below.
+NBA is off-season as of this writing (the regular season doesn't resume
+until October, so `basketball_nba` returns nothing from the odds endpoint
+right now), and `stats.nba.com`/`nba_api` remain unreachable from this
+environment regardless (a notoriously bot-hostile endpoint even normally).
+MLB is in-season and both sides of it are reachable: The Odds API for real
+odds, and the free, public `statsapi.mlb.com` (no key required) for real
+team stats and outcomes. So the default sport switched to `baseball_mlb`,
+and the model now trains on real MLB games rather than synthetic NBA ones.
+
+**Why the backtest/CLV/Kelly sizing is still synthetic, and can't just be
+"fixed" the same way:** those need real *historical* odds — the price at
+the moment a bet would have been placed, and the closing price before first
+pitch, for games that already happened — to compute real Kelly stakes and
+real CLV. The Odds API's historical odds endpoint requires a paid plan
+(confirmed directly: a real request against it returns
+`HISTORICAL_UNAVAILABLE_ON_FREE_USAGE_PLAN`). Real *current* odds don't help
+here — you can't backtest against a price that hasn't closed yet. So
+`data/processed/nba_games_synthetic.csv` (1200 games, hidden per-team "true
+strength," noisy observed features, and an opening line noisier than the
+closing line by design) remains the dataset behind `scripts/run_backtest.py`,
+`results/backtest_report.md`, and the Results section below. The honest
+path to a fully real backtest is either a paid odds plan, or collecting real
+opening/closing lines forward in time from today rather than retroactively
+— not something more code alone can solve on this tier.
 
 ## Live data: verified against a real Odds API pull
 
@@ -110,7 +118,58 @@ stays gitignored except the synthetic sample) since redistributing a paid
 data provider's live feed isn't something to put in a public repo, even on
 the free tier — pull your own with `scripts/fetch_odds.py`.
 
-## Results
+## Real MLB model: an honest null result
+
+`scripts/train_mlb_model.py` fetches every completed 2026 regular-season MLB
+game to date from `statsapi.mlb.com` (1,444 games), builds features with
+strict point-in-time discipline (`src/mlb_features.py` — a team's rolling
+stats update *after* its features are read for the current game, never
+before; unit-tested directly, including a test that a later game's outcome
+can never change an earlier row), and trains the same kind of logistic
+regression as the NBA model — but on entirely real teams, dates, and final
+scores.
+
+Home team: Team A always, since real games have a fixed home team (unlike
+the synthetic dataset, which randomized it so `home_flag` could vary as an
+explicit feature) — home advantage here is absorbed into the model's
+intercept instead, which is the standard, correct way to handle it when the
+data is real. Features: rolling runs scored/allowed, season run
+differential, last-10-games win rate, and rest days, all as home-minus-away
+diffs computed only from games strictly before the one being predicted.
+
+**Result on 286 real held-out games (2026-06-22 to 2026-07-12):**
+
+| Predictor | Accuracy | Log loss | Brier score |
+|---|---|---|---|
+| Model (logistic regression) | 49.0% | 0.6958 | 0.2513 |
+| Always predict home team (training home-win rate) | 47.9% | 0.6977 | 0.2523 |
+| Coin flip | 47.9% | 0.6931 | 0.2500 |
+
+Bootstrap 90% CI on test accuracy: [44.1%, 53.5%] — straddles a coin flip.
+90% CI on the model's per-game log-loss improvement over the home-rate
+baseline: [-0.0040, +0.0075] — includes zero. **The model does not show a
+statistically distinguishable edge over naive baselines on this real,
+held-out sample.** This is the actual result, not a caveat to explain away.
+
+The likely reason is a real, specific, and known one: single-game MLB
+outcomes are driven heavily by the **starting pitcher matchup**, an effect
+team-level rolling stats (runs scored/allowed, recent win rate) cannot
+capture at all — two teams with identical recent form can have wildly
+different win probabilities on a given day depending on who's on the mound.
+NBA's five-man rotations dilute any single-player effect far more than
+baseball's single starting pitcher does, which is a big part of why the
+NBA-shaped feature set (team-level stats only) transfers poorly to MLB.
+Starting-pitcher stats (ERA, FIP, recent starts) are the obvious next
+feature to add and are available from the same free API — not built here,
+to avoid tuning the model against the one held-out sample used to report
+it, which would defeat the purpose of a held-out sample in the first place.
+
+Full report: `results/mlb_model_report.md`, reliability diagram:
+`results/mlb_reliability_plot.png` (isotonic calibration is visibly noisier
+than Platt here too — 172 real calibration games, same small-sample pattern
+as the synthetic NBA case, now confirmed on a second, independent dataset).
+
+## Results: synthetic NBA backtest
 
 **Average CLV: +2.64 percentage points, 90% bootstrap CI [+1.78, +3.49]pp —
 the metric that matters more than raw ROI over a small sample.**
@@ -226,6 +285,18 @@ and calibration tables above): `results/backtest_report.md`.
   and Brier score, on a calibration set kept separate from training and
   test. Neither clearly won here — reported as-is rather than picking
   whichever result looked better.
+- **Point-in-time feature engineering, tested directly.** `mlb_features.py`
+  computes every feature from a team's games strictly before the one being
+  predicted; `test_mlb_features.py` includes a test that literally changes
+  a later game's score and asserts every earlier row is byte-identical. A
+  model can look great in-sample and be useless in production if this is
+  wrong, and "we tested it" is a much stronger claim than "we wrote it
+  carefully."
+- **A null result was reported as a null result.** The real MLB model
+  doesn't beat naive baselines on held-out data (see above), and that's in
+  the README, not quietly dropped in favor of the more flattering synthetic
+  numbers. A portfolio project that only ever reports wins is a portfolio
+  project that hasn't been checked by anyone yet.
 
 ## What this deliberately doesn't do
 
@@ -254,12 +325,14 @@ cp .env.example .env   # add ODDS_API_KEY to pull live odds (optional)
 pytest
 ```
 
-92 tests across `probability`, `vig`, `arbitrage`, `kelly`, `clv`, `model`,
-`backtest`, `odds_client`, `utils`, `baselines`, `calibration`, and `stats` —
-including hand-checked example values for every formula in the spec, a
-planted arbitrage the scanner must detect, a chronological split the model
-must never leak across, and a tail-dominated P&L case the backtest's
-concentration check must flag.
+102 tests across `probability`, `vig`, `arbitrage`, `kelly`, `clv`, `model`,
+`backtest`, `odds_client`, `utils`, `baselines`, `calibration`, `stats`,
+`mlb_stats_client`, and `mlb_features` — including hand-checked example
+values for every formula in the spec, a planted arbitrage the scanner must
+detect, a chronological split the model must never leak across, a
+tail-dominated P&L case the backtest's concentration check must flag, and a
+point-in-time correctness check that a later real game can never change an
+earlier one's features.
 
 ## Repo structure
 
@@ -267,17 +340,21 @@ concentration check must flag.
 sports-market-efficiency/
 ├── config.py                  # env vars, paths, API defaults
 ├── src/                       # probability, vig, arbitrage, model, kelly, clv, backtest,
-│                              #   odds_client, utils, baselines, calibration, stats
+│                              #   odds_client, utils, baselines, calibration, stats,
+│                              #   mlb_stats_client, mlb_features
 ├── scripts/
 │   ├── fetch_odds.py          # pull live odds -> data/raw/
-│   └── run_backtest.py        # train + backtest -> results/
+│   ├── run_backtest.py        # synthetic NBA: train + backtest -> results/
+│   └── train_mlb_model.py     # real MLB: fetch + train + evaluate -> results/
 ├── data/
 │   ├── raw/                   # unmodified API pulls (gitignored, except the synthetic sample)
-│   └── processed/             # cleaned, joined datasets ready for analysis
+│   └── processed/             # nba_games_synthetic.csv, mlb_games_real.csv
 ├── notebooks/exploration.ipynb
 ├── tests/
 └── results/
-    ├── backtest_report.md
+    ├── backtest_report.md          # synthetic NBA backtest
     ├── clv_plot.png
-    └── calibration_plot.png
+    ├── calibration_plot.png
+    ├── mlb_model_report.md         # real MLB model evaluation
+    └── mlb_reliability_plot.png
 ```
