@@ -8,6 +8,35 @@ research/backtesting pipeline — data ingestion, a probability model, a
 backtest, and risk-managed sizing — built as a quant-trading portfolio piece,
 not a betting product.
 
+## TL;DR
+
+- **The pipeline is real end-to-end**, not a toy: a live Odds API key, a real
+  arbitrage scan against actual multi-book prices, and a real predictive
+  model trained on 1,444 real MLB games — not just a notebook that runs once
+  on a CSV someone else cleaned.
+- **The real model doesn't beat a coin flip on held-out data (49.0% vs.
+  47.9%), and that's reported as the finding, not tuned away** — the README
+  says why (team-level stats can't see the starting-pitcher effect that
+  dominates single-game MLB outcomes) instead of quietly swapping in a
+  friendlier number. This is the single best "how do you know you're not
+  fooling yourself" answer in the project.
+- **A tail-risk check the backtest runs automatically caught its own fake
+  result**: a calibration variant posted a flashy +33% ROI until
+  `top_bet_pnl_share` showed 136% of that profit came from one lucky
+  long-odds bet. Built the check *because* it caught something, not as a
+  box to tick.
+- **CLV, not ROI, is the headline metric** — on the synthetic backtest, raw
+  ROI was negative (-5.5%) but average CLV was positive with a bootstrap
+  confidence interval that clears zero (+2.64pp, 90% CI [+1.78, +3.49]);
+  ROI's own CI doesn't. That gap *is* the thesis of the project, demonstrated
+  with real numbers, not just asserted.
+- **The isotonic-vs-Platt calibration finding reproduced independently on
+  two unrelated datasets** (synthetic NBA, real MLB) — same pattern both
+  times, which is what makes it a real finding about small calibration sets
+  rather than a one-off fluke worth a footnote.
+- Full detail on every point above is below, in "Real MLB model" and
+  "Results: synthetic NBA backtest."
+
 ## Why this framing
 
 A sportsbook quoting -110 on both sides of a game is doing exactly what a
