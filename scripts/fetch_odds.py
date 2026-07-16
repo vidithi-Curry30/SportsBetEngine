@@ -1,7 +1,8 @@
 """CLI: pull current odds from The Odds API and save to data/raw/.
 
 Usage:
-    python scripts/fetch_odds.py --sport basketball_nba
+    python scripts/fetch_odds.py --sport baseball_mlb
+    python scripts/fetch_odds.py --sport basketball_nba   # once NBA is back in season
 """
 import argparse
 import sys

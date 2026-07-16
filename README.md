@@ -38,37 +38,77 @@ fully priced in the same information (i.e., before the closing line).
 Two commands run it end-to-end:
 
 ```bash
-python scripts/fetch_odds.py --sport basketball_nba   # pull live odds (requires an API key)
-python scripts/run_backtest.py                        # train, backtest, write results/
+python scripts/fetch_odds.py --sport baseball_mlb   # pull live odds (needs ODDS_API_KEY in .env)
+python scripts/run_backtest.py                      # train, backtest, write results/
 ```
 
 ## A note on data
 
-No Odds API key or `nba_api`/`stats.nba.com` access was available while
-building this (`stats.nba.com` times out from this environment — a
-notoriously bot-hostile endpoint even under normal conditions). Rather than
-leave modules untested, each one is validated against **clearly labeled
-synthetic data** with a realistic generative structure:
+**The Odds API is live and verified working** (`.env` + `ODDS_API_KEY`, free
+tier). NBA is off-season as of this writing — the regular season doesn't
+resume until October, so `basketball_nba` returns nothing from the odds
+endpoint right now — so the default sport is `baseball_mlb`, which is
+in-season, per the spec's fallback ("pick whatever US major sport is in
+season"). A real pull returned 4 live MLB games quoted across up to 9 books;
+see "Live data" below. Historical NBA game-level stats (`nba_api`,
+`stats.nba.com`) remain unreachable from this environment (`stats.nba.com`
+times out — a notoriously bot-hostile endpoint even normally), and the
+model's feature set is NBA-specific in any case, so the model and backtest
+below still run on **clearly labeled synthetic data**:
 
-- **Arbitrage scanner**: `data/raw/basketball_nba_synthetic_sample.json` — 6
-  games x 4 books, each book pricing independently with realistic 4-6% vig.
-  Result: 0 arbitrage opportunities, the expected outcome (see
-  `notebooks/exploration.ipynb`).
 - **Model + backtest**: `data/processed/nba_games_synthetic.csv` — 1200
-  games over a synthetic season. Each team has a fixed hidden "true
+  games over a synthetic NBA season. Each team has a fixed hidden "true
   strength"; observed features (pace, ratings, recent win %, rest days) are
   *noisy proxies* for that strength, not the strength itself, and the market's
   opening line is a noisier estimate of the true win probability than its
   closing line — so there's a real, learnable, but imperfectly-exploitable
   edge, by design, rather than a hand-planted one.
 
-**This must be swapped for a real Odds API pull and real historical
-game data (via `nba_api` or similar) before any number below is a genuine
-market-efficiency finding.** Right now these numbers demonstrate that the
+**This must be swapped for real historical game data (via `nba_api` or an
+MLB-equivalent feature set) before the model/backtest numbers below are a
+genuine market-efficiency finding.** Right now they demonstrate that the
 pipeline — ingestion → no-vig probability → model → chronological split →
 Kelly sizing → backtest → CLV — is correctly wired and leak-free, which is
 what the code needs to be defensible in an interview regardless of the
-dataset behind it.
+dataset behind it. The arbitrage scanner, by contrast, is now verified
+against real data directly — see below.
+
+## Live data: verified against a real Odds API pull
+
+A real pull (`baseball_mlb`, `2026-07-16`) returned 4 games:
+
+| Matchup | Books quoting |
+|---|---|
+| New York Mets @ Philadelphia Phillies | 9 |
+| Pittsburgh Pirates @ Cleveland Guardians | 2 |
+| Chicago White Sox @ Toronto Blue Jays | 2 |
+| San Diego Padres @ Kansas City Royals | 1 |
+
+Running `src.arbitrage.scan_games_for_arbitrage` on this real pull: **0
+arbitrage opportunities**, consistent with the synthetic-data result — and
+this time not a hand-tuned outcome, an actual live market. Vig by book on
+this pull, low to high:
+
+| Book | Avg vig |
+|---|---|
+| BetUS | 2.22% |
+| BetOnline.ag / LowVig.ag | 2.44% |
+| FanDuel | 3.98% |
+| MyBookie.ag | 4.01% |
+| BetRivers | 4.07% |
+| Bovada | 4.47% |
+| DraftKings | 4.62% |
+| BetMGM | 5.07% |
+
+Small sample (1-4 games per book), so read this as a snapshot, not a firm
+ranking — but directionally it lines up with priors about this market: the
+offshore/low-margin books (BetUS, BetOnline, LowVig — its name is not a
+coincidence) price tighter than the mainstream US books. This is real data
+freely pulled and analyzed with the same code that runs on the synthetic
+sample above; the raw pull itself isn't committed to the repo (`data/raw/*`
+stays gitignored except the synthetic sample) since redistributing a paid
+data provider's live feed isn't something to put in a public repo, even on
+the free tier — pull your own with `scripts/fetch_odds.py`.
 
 ## Results
 
