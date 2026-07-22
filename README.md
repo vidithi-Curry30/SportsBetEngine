@@ -8,6 +8,11 @@ research/backtesting pipeline — data ingestion, a probability model, a
 backtest, and risk-managed sizing — built as a quant-trading portfolio piece,
 not a betting product.
 
+*Built with Claude Code as a development tool: I directed scope and data
+decisions, reviewed and approved each phase, and made the calls at every
+decision point; Claude implemented most of the code. I can walk through and
+defend every module.*
+
 ## TL;DR
 
 - **The pipeline is real end-to-end**, not a toy: a live Odds API key, a real
