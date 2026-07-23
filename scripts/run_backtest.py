@@ -90,7 +90,7 @@ def _run_baseline_significance(test_df: pd.DataFrame, model_probs: np.ndarray):
 
 def _run_bootstrap_ci(result: dict):
     bet_log = result["bet_log"]
-    per_bet_returns = [b["pnl"] / (b["bankroll_after"] - b["pnl"]) for b in bet_log]
+    per_bet_returns = [b["pnl"] / b["bankroll_before"] for b in bet_log]
     clv_values = [b["clv"] for b in bet_log]
 
     roi_ci = bootstrap_ci(per_bet_returns, statistic=np.mean, ci=0.90)

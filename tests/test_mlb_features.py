@@ -1,6 +1,6 @@
 import pytest
 
-from src.mlb_features import build_features
+from src.mlb_features import build_features, compute_current_features
 
 
 def make_game(date, home, away, home_score, away_score):
@@ -94,6 +94,55 @@ class TestBuildFeatures:
         # Z: 1 prior game, won 1-0 -> recent_win_pct = 1.0
         # A: 12 prior games, last 10 all losses -> recent_win_pct should be 0.0, not 2/12
         assert final_row["recent_win_pct_diff"] == pytest.approx(1.0 - 0.0)
+
+
+class TestComputeCurrentFeatures:
+    def test_agrees_with_build_features_on_an_already_played_matchup(self):
+        # compute_current_features, given every game strictly before a played game's
+        # date and that game's own (home, away) pair, must reproduce exactly the row
+        # build_features would have emitted for it -- same rolling-state logic, just
+        # entered from the "game hasn't happened yet" side instead of the "game is
+        # already a row" side.
+        games = [
+            make_game("2026-04-01", "A", "B", 5, 3),
+            make_game("2026-04-02", "A", "C", 2, 4),
+            make_game("2026-04-04", "B", "A", 1, 6),
+        ]
+        built = build_features(games)
+        row = built.iloc[0]  # the "B" (home) vs "A" (away) game on 2026-04-04
+
+        prior_games = [g for g in games if g["date"] < "2026-04-04"]
+        live = compute_current_features(prior_games, home_team="B", away_team="A", as_of_date="2026-04-04")
+
+        assert live == pytest.approx(
+            {
+                "runs_scored_diff": row["runs_scored_diff"],
+                "runs_allowed_diff": row["runs_allowed_diff"],
+                "season_run_diff_diff": row["season_run_diff_diff"],
+                "recent_win_pct_diff": row["recent_win_pct_diff"],
+                "rest_days_diff": row["rest_days_diff"],
+            }
+        )
+
+    def test_none_when_home_team_has_no_prior_history(self):
+        games = [make_game("2026-04-01", "A", "B", 5, 3)]
+        assert compute_current_features(games, home_team="C", away_team="A", as_of_date="2026-04-05") is None
+
+    def test_none_when_away_team_has_no_prior_history(self):
+        games = [make_game("2026-04-01", "A", "B", 5, 3)]
+        assert compute_current_features(games, home_team="A", away_team="C", as_of_date="2026-04-05") is None
+
+    def test_ignores_games_on_or_after_as_of_date(self):
+        # A game on the as-of date itself (e.g. a doubleheader nightcap) must not
+        # leak into the "current" state -- only strictly-prior games count.
+        games = [
+            make_game("2026-04-01", "A", "B", 5, 3),
+            make_game("2026-04-02", "A", "C", 2, 4),
+            make_game("2026-04-04", "B", "A", 9, 0),  # same date as as_of_date, must be excluded
+        ]
+        without_same_day_game = compute_current_features(games[:2], home_team="B", away_team="A", as_of_date="2026-04-04")
+        with_same_day_game = compute_current_features(games, home_team="B", away_team="A", as_of_date="2026-04-04")
+        assert with_same_day_game == pytest.approx(without_same_day_game)
 
 
 class TestFeatureColumns:
