@@ -212,12 +212,14 @@ cp .env.example .env   # add ODDS_API_KEY to pull live odds (optional)
 pytest
 ```
 
-170 tests, including hand-checked formula values, a planted arbitrage the
+174 tests, including hand-checked formula values, a planted arbitrage the
 scanner must detect, a chronological split the model must never leak across,
 a tail-dominated P&L case the concentration check must flag, point-in-time
 correctness checks (historical and live), a slate that forces the exposure
-cap to bind, a deterministic market-making flow that self-corrects, and a
-paper-trade ledger round-trip against synthetic Odds-API-shaped payloads.
+cap to bind, a deterministic market-making flow that self-corrects, a
+paper-trade ledger round-trip against synthetic Odds-API-shaped payloads,
+and a full mocked run of `collect_paper_trades.py` itself (fetch → train →
+pull odds → flag edges → log), not just its underlying units.
 
 ## Repo structure
 
