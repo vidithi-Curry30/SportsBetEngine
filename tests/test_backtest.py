@@ -205,3 +205,64 @@ class TestSlateExposureCap:
 
         for b in result["bet_log"]:
             assert b["stake"] == pytest.approx(10_000 * 0.05)
+
+
+class TestCorrelationAwareSizing:
+    def make_slate_with_doubleheader(self):
+        # Team X plays twice on the same date (a doubleheader) against two
+        # different opponents -- the correlation source src.portfolio_optimization
+        # models; team Y's single game shares no team with either.
+        return pd.DataFrame(
+            {
+                "date": ["2025-03-10"] * 3,
+                "team_a": ["X", "X", "Y"],
+                "team_b": ["A", "B", "C"],
+                "pace_diff": [0.0] * 3,
+                "off_rating_diff": [0.0] * 3,
+                "def_rating_diff": [0.0] * 3,
+                "recent_win_pct_diff": [0.0] * 3,
+                "rest_days_diff": [0.0] * 3,
+                "home_flag": [0] * 3,
+                "team_a_win": [1] * 3,
+                "market_odds_team_a": [100] * 3,
+                "market_odds_team_b": [100] * 3,
+                "closing_odds_team_a": [100] * 3,
+            }
+        )
+
+    def test_unknown_sizing_strategy_raises(self):
+        df = self.make_slate_with_doubleheader()
+        with pytest.raises(ValueError):
+            run_backtest(df, DummyModel(prob=0.7), sizing_strategy="not_a_real_strategy")
+
+    def test_correlation_aware_sizes_doubleheader_bets_below_independent_kelly(self):
+        # Team X's two same-day bets should each get less stake than the
+        # single-game team Y bet with identical edge/odds -- correlation
+        # (sharing team X) discounts them relative to an independent bet,
+        # the property portfolio_optimization's own tests verify in isolation.
+        df = self.make_slate_with_doubleheader()
+        model = DummyModel(prob=0.6)
+
+        result = run_backtest(
+            df, model, edge_threshold=0.03, sizing_strategy="correlation_aware",
+            max_bet_pct=1.0, max_slate_pct=1.0, starting_bankroll=10_000,
+        )
+
+        stakes = [b["stake_fraction"] for b in result["bet_log"]]
+        assert result["num_bets"] == 3
+        # The two doubleheader bets (team X) and the standalone bet (team Y)
+        # all share identical model_prob/odds, so absent correlation they'd
+        # all get the same stake -- team X's pair must come in lower.
+        team_x_stakes = stakes[:2]
+        team_y_stake = stakes[2]
+        assert all(s < team_y_stake for s in team_x_stakes)
+
+    def test_proportional_is_still_the_default(self):
+        df = self.make_slate_with_doubleheader()
+        model = DummyModel(prob=0.6)
+
+        result = run_backtest(df, model, edge_threshold=0.03, starting_bankroll=10_000)
+        # Default strategy ignores correlation entirely -- every bet here has
+        # identical model_prob/odds, so every stake should come out equal.
+        stakes = [b["stake_fraction"] for b in result["bet_log"]]
+        assert stakes[0] == pytest.approx(stakes[1]) == pytest.approx(stakes[2])

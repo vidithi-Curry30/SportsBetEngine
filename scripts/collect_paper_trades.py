@@ -45,6 +45,11 @@ def main():
     parser.add_argument("--sport", default="baseball_mlb")
     parser.add_argument("--edge-threshold", type=float, default=0.03)
     parser.add_argument("--max-slate-pct", type=float, default=0.20, help="Aggregate exposure cap across all bets flagged for the same date")
+    parser.add_argument(
+        "--sizing-strategy", default="proportional", choices=["proportional", "correlation_aware"],
+        help="proportional: independent per-bet Kelly + slate cap. correlation_aware: "
+        "discount bets sharing a team (e.g. a doubleheader) via portfolio_optimization.",
+    )
     parser.add_argument("--history-start-date", default="2026-03-01", help="Start of the history used to fit the model")
     parser.add_argument("--ledger", default=str(DEFAULT_LEDGER_PATH))
     args = parser.parse_args()
@@ -74,7 +79,9 @@ def main():
 
     _print_edge_report(edges)
 
-    new_rows = build_paper_trade_rows(edges, snapshot_time=snapshot_time, max_slate_pct=args.max_slate_pct)
+    new_rows = build_paper_trade_rows(
+        edges, snapshot_time=snapshot_time, max_slate_pct=args.max_slate_pct, sizing_strategy=args.sizing_strategy
+    )
     ledger_path = Path(args.ledger)
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
 

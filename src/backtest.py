@@ -13,6 +13,7 @@ import pandas as pd
 from src.clv import calculate_clv
 from src.kelly import fractional_kelly, kelly_fraction
 from src.model import has_value_edge, predict_win_probability
+from src.portfolio_optimization import multivariate_kelly_weights
 from src.portfolio_risk import apply_slate_exposure_cap
 from src.probability import american_to_probability, probability_to_american, remove_vig
 
@@ -40,14 +41,17 @@ def run_backtest(
     edge_threshold: float = 0.03,
     slippage_pct: float = 0.005,
     max_slate_pct: float = 0.20,
+    sizing_strategy: str = "proportional",
+    same_team_correlation: float = 0.5,
     probability_fn: Optional[Callable] = None,
 ) -> dict:
     """Run the backtest over `test_df` (the held-out period from model.chronological_split
     -- never games the model was trained on).
 
-    Expects columns: date, team_a_win, market_odds_team_a, market_odds_team_b,
-    closing_odds_team_a, plus the model's feature columns. Bets are only ever
-    placed on team_a for simplicity; a symmetric team_b leg is a natural extension.
+    Expects columns: date, team_a, team_b, team_a_win, market_odds_team_a,
+    market_odds_team_b, closing_odds_team_a, plus the model's feature columns.
+    Bets are only ever placed on team_a for simplicity; a symmetric team_b leg
+    is a natural extension.
 
     Pass either `model` (a fitted model.train_model() estimator, scored via
     model.predict_win_probability) or `probability_fn` (any callable taking a
@@ -57,10 +61,20 @@ def run_backtest(
     Bets are batched by date: every flagged bet on the same date is sized against
     that day's starting bankroll (not sequentially compounded against each other,
     since a real slate is decided and placed simultaneously, not one game at a
-    time as results trickle in), then `portfolio_risk.apply_slate_exposure_cap`
-    scales every stake on an over-limit day down proportionally -- a real desk's
-    per-slate risk limit, on top of the existing per-bet `max_bet_pct` cap.
+    time as results trickle in). `sizing_strategy` controls how that day's bets
+    are sized against each other:
+      - "proportional" (default): independent per-bet Kelly, then
+        `portfolio_risk.apply_slate_exposure_cap` scales every stake on an
+        over-limit day down by the same factor.
+      - "correlation_aware": `portfolio_optimization.multivariate_kelly_weights`
+        replaces the independent per-bet sizing with a covariance-aware
+        allocation -- two bets sharing a team (e.g. a doubleheader) get sized
+        down relative to treating them as independent, not just capped
+        the same as everything else on an over-limit day.
     """
+    if sizing_strategy not in ("proportional", "correlation_aware"):
+        raise ValueError(f"Unknown sizing_strategy: {sizing_strategy!r}")
+
     if probability_fn is None:
         if model is None:
             raise ValueError("run_backtest requires either model or probability_fn")
@@ -89,9 +103,6 @@ def run_backtest(
             placed_odds = apply_slippage(game["market_odds_team_a"], slippage_pct)
             decimal_odds = american_to_decimal(placed_odds)
 
-            f_star = kelly_fraction(model_prob, decimal_odds)
-            stake_fraction = max(0.0, min(fractional_kelly(f_star, kelly_fraction_mult), max_bet_pct))
-
             candidates.append(
                 {
                     "game": game,
@@ -99,11 +110,28 @@ def run_backtest(
                     "no_vig_market_prob": no_vig_prob_a,
                     "placed_odds": placed_odds,
                     "decimal_odds": decimal_odds,
-                    "stake_fraction": stake_fraction,
+                    # Only needed by sizing_strategy="correlation_aware"; absent in
+                    # test fixtures/datasets that don't carry team identity is fine
+                    # for the default "proportional" strategy, which never reads it.
+                    "teams": (game.get("team_a"), game.get("team_b")),
                 }
             )
 
-        candidates = apply_slate_exposure_cap(candidates, max_slate_pct=max_slate_pct)
+        if sizing_strategy == "correlation_aware":
+            weights = multivariate_kelly_weights(
+                candidates,
+                same_team_correlation=same_team_correlation,
+                kelly_fraction_mult=kelly_fraction_mult,
+                max_bet_pct=max_bet_pct,
+                max_slate_pct=max_slate_pct,
+            )
+            for c, w in zip(candidates, weights):
+                c["stake_fraction"] = w
+        else:
+            for c in candidates:
+                f_star = kelly_fraction(c["model_prob"], c["decimal_odds"])
+                c["stake_fraction"] = max(0.0, min(fractional_kelly(f_star, kelly_fraction_mult), max_bet_pct))
+            candidates = apply_slate_exposure_cap(candidates, max_slate_pct=max_slate_pct)
 
         day_bets = []
         for c in candidates:

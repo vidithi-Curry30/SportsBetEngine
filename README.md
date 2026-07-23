@@ -51,6 +51,7 @@ price*, consistently, net of the vig, before the closing line.
 | `baselines.py` / `calibration.py` / `stats.py` | Naive-baseline comparison, isotonic/Platt calibration, bootstrap CIs |
 | `mlb_stats_client.py` / `mlb_features.py` / `mlb_pitcher_features.py` | Real MLB results and point-in-time team/pitcher features (historical + live) |
 | `portfolio_risk.py` | Slate-level exposure cap on top of the per-bet Kelly cap |
+| `portfolio_optimization.py` | Correlation-aware sizing: a multivariate Kelly generalization (`w* = Σ⁻¹μ`) that discounts bets sharing a team |
 | `market_maker.py` | Quotes a two-sided line and simulates inventory-skew repricing |
 | `paper_trading.py` | Live line-shopping + a forward paper-trade ledger for real CLV |
 
@@ -156,6 +157,23 @@ compounded), and `apply_slate_exposure_cap` scales an over-limit day's stakes
 down proportionally (default 20% of bankroll/slate, on top of the 5%
 per-bet cap) — preserving relative sizing rather than dropping bets.
 
+**Correlation-aware sizing** (`src/portfolio_optimization.py`, opt-in via
+`sizing_strategy="correlation_aware"`) goes further: the proportional cap
+above treats every bet on a slate as equally diversifying, but two bets on
+the same team — an MLB doubleheader — aren't independent. This module is a
+multivariate generalization of the single-bet Kelly formula: `w* = Σ⁻¹μ`,
+the standard quadratic (mean-variance) approximation to multivariate Kelly,
+where μ is each bet's expected return and Σ is their covariance matrix
+(assumed correlation between same-team bets, stated as an assumption, not
+fit — there's no real correlated-outcome sample to estimate it from yet).
+It's an approximation, not an exact generalization of the single-bet
+formula (honestly documented in the module), but it gets the property that
+matters right: independent bets decouple into ordinary per-bet Kelly, and
+two bets sharing a team get sized *below* what treating them independently
+would give — both proven directly in `tests/test_portfolio_optimization.py`
+against hand-derived closed forms, not just "a number came out." Off by
+default; the primary backtest results above are unaffected.
+
 ## Market making
 
 Everything else here *consumes* a market price. `market_maker.py` inverts
@@ -210,14 +228,16 @@ cp .env.example .env   # add ODDS_API_KEY to pull live odds (optional)
 pytest
 ```
 
-174 tests, including hand-checked formula values, a planted arbitrage the
+192 tests, including hand-checked formula values, a planted arbitrage the
 scanner must detect, a chronological split the model must never leak across,
 a tail-dominated P&L case the concentration check must flag, point-in-time
 correctness checks (historical and live), a slate that forces the exposure
-cap to bind, a deterministic market-making flow that self-corrects, a
-paper-trade ledger round-trip against synthetic Odds-API-shaped payloads,
-and a full mocked run of `collect_paper_trades.py` itself (fetch → train →
-pull odds → flag edges → log), not just its underlying units.
+cap to bind, correlation-aware weights checked against hand-derived closed
+forms (not just "a number came out"), a deterministic market-making flow
+that self-corrects, a paper-trade ledger round-trip against synthetic
+Odds-API-shaped payloads, and a full mocked run of `collect_paper_trades.py`
+itself (fetch → train → pull odds → flag edges → log), not just its
+underlying units.
 
 ## Repo structure
 
@@ -227,7 +247,7 @@ sports-market-efficiency/
 ├── src/                       # probability, vig, arbitrage, model, kelly, clv, backtest,
 │                              #   baselines, calibration, stats, mlb_stats_client,
 │                              #   mlb_features, mlb_pitcher_features, portfolio_risk,
-│                              #   market_maker, paper_trading
+│                              #   portfolio_optimization, market_maker, paper_trading
 ├── scripts/                   # fetch_odds, run_backtest, train_mlb_model(_with_pitching),
 │                              #   collect_paper_trades, reconcile_paper_trades
 ├── data/                       # raw/, processed/, paper_trades/ (all gitignored except samples)

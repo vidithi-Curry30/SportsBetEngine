@@ -26,6 +26,7 @@ import pandas as pd
 from src.clv import calculate_clv
 from src.kelly import fractional_kelly, kelly_fraction
 from src.model import has_value_edge
+from src.portfolio_optimization import multivariate_kelly_weights
 from src.portfolio_risk import apply_slate_exposure_cap
 from src.probability import american_to_probability, remove_vig
 
@@ -157,15 +158,23 @@ def build_paper_trade_rows(
     kelly_fraction_mult: float = 0.5,
     max_bet_pct: float = 0.05,
     max_slate_pct: float = 0.20,
+    sizing_strategy: str = "proportional",
+    same_team_correlation: float = 0.5,
 ) -> list[dict]:
     """Turn the flagged rows of a compute_live_edges() result into paper-trade
-    ledger rows, sized the same way run_backtest sizes a real bet: fractional
-    Kelly, capped per bet, *and* capped in aggregate per slate
-    (portfolio_risk.apply_slate_exposure_cap) -- a live MLB pull can flag
-    several games on the same date, exactly the scenario that cap exists for,
-    same as the batched-by-date logic in backtest.run_backtest. Nothing is
-    actually wagered; this only logs the bet that *would* have been placed,
-    at today's real price, for later reconciliation."""
+    ledger rows. `sizing_strategy` matches backtest.run_backtest:
+      - "proportional" (default): independent per-bet Kelly, capped per bet
+        and then per slate via portfolio_risk.apply_slate_exposure_cap.
+      - "correlation_aware": portfolio_optimization.multivariate_kelly_weights
+        sizes a day's bets jointly, discounting bets that share a team (e.g.
+        an MLB doubleheader) relative to treating them as independent.
+    A live MLB pull can flag several games on the same date, exactly the
+    scenario both strategies exist for. Nothing is actually wagered; this
+    only logs the bet that *would* have been placed, at today's real price,
+    for later reconciliation."""
+    if sizing_strategy not in ("proportional", "correlation_aware"):
+        raise ValueError(f"Unknown sizing_strategy: {sizing_strategy!r}")
+
     candidates = []
     for _, edge in edges_df[edges_df["has_value_edge"]].iterrows():
         if pd.isna(edge["best_home_odds"]):
@@ -173,8 +182,6 @@ def build_paper_trade_rows(
 
         best_home_odds = int(edge["best_home_odds"])
         decimal_odds = 1 + best_home_odds / 100 if best_home_odds > 0 else 1 + 100 / -best_home_odds
-        f_star = kelly_fraction(edge["model_prob"], decimal_odds)
-        stake_fraction = max(0.0, min(fractional_kelly(f_star, kelly_fraction_mult), max_bet_pct))
 
         candidates.append(
             {
@@ -187,7 +194,8 @@ def build_paper_trade_rows(
                 "edge": edge["edge"],
                 "book": edge["best_book"],
                 "placed_odds": best_home_odds,
-                "stake_fraction": stake_fraction,
+                "decimal_odds": decimal_odds,
+                "teams": (edge["home_team"], edge["away_team"]),
                 "status": "open",
                 "closing_odds": None,
                 "result": None,
@@ -199,7 +207,25 @@ def build_paper_trade_rows(
     rows = []
     for game_date in sorted({c["game_date"] for c in candidates}):
         slate = [c for c in candidates if c["game_date"] == game_date]
-        rows.extend(apply_slate_exposure_cap(slate, max_slate_pct=max_slate_pct))
+        if sizing_strategy == "correlation_aware":
+            weights = multivariate_kelly_weights(
+                slate, same_team_correlation=same_team_correlation,
+                kelly_fraction_mult=kelly_fraction_mult, max_bet_pct=max_bet_pct, max_slate_pct=max_slate_pct,
+            )
+            for c, w in zip(slate, weights):
+                c["stake_fraction"] = w
+        else:
+            for c in slate:
+                f_star = kelly_fraction(c["model_prob"], c["decimal_odds"])
+                c["stake_fraction"] = max(0.0, min(fractional_kelly(f_star, kelly_fraction_mult), max_bet_pct))
+            slate = apply_slate_exposure_cap(slate, max_slate_pct=max_slate_pct)
+        rows.extend(slate)
+
+    for row in rows:
+        del row["decimal_odds"]
+        del row["teams"]
+
+    return rows
     return rows
 
 

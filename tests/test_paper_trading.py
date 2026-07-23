@@ -171,6 +171,33 @@ class TestBuildPaperTradeRows:
         assert len(rows) == 2
         assert all(r["stake_fraction"] == pytest.approx(0.10) for r in rows)
 
+    def test_unknown_sizing_strategy_raises(self):
+        edges_df = pd.DataFrame([self.make_flagged_edge("2026-07-23", "A", "B")])
+        with pytest.raises(ValueError):
+            build_paper_trade_rows(edges_df, snapshot_time="t0", sizing_strategy="bogus")
+
+    def test_correlation_aware_discounts_a_shared_team_doubleheader(self):
+        # Team A plays twice the same day (a doubleheader); team C's game
+        # shares no team with either and has identical model_prob/odds.
+        edges_df = pd.DataFrame(
+            [
+                self.make_flagged_edge("2026-07-23", "A", "X"),
+                self.make_flagged_edge("2026-07-23", "A", "Y"),
+                self.make_flagged_edge("2026-07-23", "C", "D"),
+            ]
+        )
+        rows = build_paper_trade_rows(
+            edges_df, snapshot_time="t0", sizing_strategy="correlation_aware",
+            max_bet_pct=1.0, max_slate_pct=1.0,
+        )
+
+        team_a_stakes = [r["stake_fraction"] for r in rows if r["home_team"] == "A"]
+        team_c_stake = next(r["stake_fraction"] for r in rows if r["home_team"] == "C")
+        assert len(team_a_stakes) == 2
+        assert all(s < team_c_stake for s in team_a_stakes)
+        assert "decimal_odds" not in rows[0]
+        assert "teams" not in rows[0]
+
 
 class TestLedgerRoundTrip:
     def test_load_missing_ledger_returns_empty_frame_with_columns(self, tmp_path):
