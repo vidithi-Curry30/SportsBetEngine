@@ -8,6 +8,35 @@ research/backtesting pipeline — data ingestion, a probability model, a
 backtest, and risk-managed sizing — built as a quant-trading portfolio piece,
 not a betting product.
 
+## TL;DR
+
+- **The pipeline is real end-to-end**, not a toy: a live Odds API key, a real
+  arbitrage scan against actual multi-book prices, and a real predictive
+  model trained on 1,444 real MLB games — not just a notebook that runs once
+  on a CSV someone else cleaned.
+- **The real model doesn't beat a coin flip on held-out data (49.0% vs.
+  47.9%), and that's reported as the finding, not tuned away** — the README
+  says why (team-level stats can't see the starting-pitcher effect that
+  dominates single-game MLB outcomes) instead of quietly swapping in a
+  friendlier number. This is the single best "how do you know you're not
+  fooling yourself" answer in the project.
+- **A tail-risk check the backtest runs automatically caught its own fake
+  result**: a calibration variant posted a flashy +33% ROI until
+  `top_bet_pnl_share` showed 136% of that profit came from one lucky
+  long-odds bet. Built the check *because* it caught something, not as a
+  box to tick.
+- **CLV, not ROI, is the headline metric** — on the synthetic backtest, raw
+  ROI was negative (-5.5%) but average CLV was positive with a bootstrap
+  confidence interval that clears zero (+2.64pp, 90% CI [+1.78, +3.49]);
+  ROI's own CI doesn't. That gap *is* the thesis of the project, demonstrated
+  with real numbers, not just asserted.
+- **The isotonic-vs-Platt calibration finding reproduced independently on
+  two unrelated datasets** (synthetic NBA, real MLB) — same pattern both
+  times, which is what makes it a real finding about small calibration sets
+  rather than a one-off fluke worth a footnote.
+- Full detail on every point above is below, in "Real MLB model" and
+  "Results: synthetic NBA backtest."
+
 ## Why this framing
 
 A sportsbook quoting -110 on both sides of a game is doing exactly what a
@@ -34,46 +63,91 @@ fully priced in the same information (i.e., before the closing line).
 | `src/baselines.py` | Naive predictors (trust the market, always home, coin flip) the model has to actually beat |
 | `src/calibration.py` | Reliability diagrams and isotonic/Platt recalibration — is the model's raw probability trustworthy enough to size bets with? |
 | `src/stats.py` | Bootstrap confidence intervals for backtest metrics on a small sample |
+| `src/mlb_stats_client.py` | Wraps the free, public MLB Stats API (`statsapi.mlb.com`) for real completed-game results |
+| `src/mlb_features.py` | Point-in-time (no-lookahead) feature engineering on real MLB games — see "Real MLB model" below |
 
-Two commands run it end-to-end:
+Three commands run it end-to-end:
 
 ```bash
-python scripts/fetch_odds.py --sport basketball_nba   # pull live odds (requires an API key)
-python scripts/run_backtest.py                        # train, backtest, write results/
+python scripts/fetch_odds.py --sport baseball_mlb   # pull live odds (needs ODDS_API_KEY in .env)
+python scripts/run_backtest.py                      # synthetic NBA: train, backtest, write results/
+python scripts/train_mlb_model.py                   # real MLB: fetch, train, evaluate, write results/
 ```
 
 ## A note on data
 
-No Odds API key or `nba_api`/`stats.nba.com` access was available while
-building this (`stats.nba.com` times out from this environment — a
-notoriously bot-hostile endpoint even under normal conditions). Rather than
-leave modules untested, each one is validated against **clearly labeled
-synthetic data** with a realistic generative structure:
+| Piece | Status |
+|---|---|
+| Live odds (arbitrage scanner) | **Real.** The Odds API, live key. |
+| Win-probability model | **Real.** Trained on real MLB games (`statsapi.mlb.com`). |
+| Backtest / CLV / Kelly sizing | **Synthetic**, structurally — see why. |
 
-- **Arbitrage scanner**: `data/raw/basketball_nba_synthetic_sample.json` — 6
-  games x 4 books, each book pricing independently with realistic 4-6% vig.
-  Result: 0 arbitrage opportunities, the expected outcome (see
-  `notebooks/exploration.ipynb`).
-- **Model + backtest**: `data/processed/nba_games_synthetic.csv` — 1200
-  games over a synthetic season. Each team has a fixed hidden "true
-  strength"; observed features (pace, ratings, recent win %, rest days) are
-  *noisy proxies* for that strength, not the strength itself, and the market's
-  opening line is a noisier estimate of the true win probability than its
-  closing line — so there's a real, learnable, but imperfectly-exploitable
-  edge, by design, rather than a hand-planted one.
+NBA is off-season (nothing live until October) and `stats.nba.com`/`nba_api`
+are unreachable from this environment anyway, so the default sport is
+`baseball_mlb`: The Odds API covers real odds, and the free `statsapi.mlb.com`
+covers real team stats and outcomes.
 
-**This must be swapped for a real Odds API pull and real historical
-game data (via `nba_api` or similar) before any number below is a genuine
-market-efficiency finding.** Right now these numbers demonstrate that the
-pipeline — ingestion → no-vig probability → model → chronological split →
-Kelly sizing → backtest → CLV — is correctly wired and leak-free, which is
-what the code needs to be defensible in an interview regardless of the
-dataset behind it.
+The backtest/CLV/Kelly sizing can't follow the same path: they need real
+*historical* odds (the price at bet time and at close, for games already
+played), and The Odds API's historical endpoint requires a paid plan
+(confirmed directly — a real request returns
+`HISTORICAL_UNAVAILABLE_ON_FREE_USAGE_PLAN`). Real *current* odds don't help
+retroactively. So `data/processed/nba_games_synthetic.csv` (hidden per-team
+"true strength," an opening line noisier than the closing line, by design)
+still backs `scripts/run_backtest.py` and the backtest results below — a
+paid plan or forward-collecting real lines from today are the only real fixes.
+Both synthetic datasets are generated by committed scripts
+(`scripts/generate_synthetic_nba_data.py`,
+`scripts/generate_synthetic_arbitrage_sample.py`, both seeded and
+reproducing the committed files byte-for-byte) rather than taken on faith.
 
-## Results
+## Live data: verified against a real Odds API pull
 
-**Average CLV: +2.64 percentage points, 90% bootstrap CI [+1.78, +3.49]pp —
-the metric that matters more than raw ROI over a small sample.**
+A real pull (`baseball_mlb`, `2026-07-16`) returned 4 games across up to 9
+books each. `arbitrage.scan_games_for_arbitrage` found **0 opportunities** —
+consistent with the synthetic result, this time on an actual live market.
+Vig by book ranged 2.2% (BetUS) to 5.1% (BetMGM), with offshore/low-margin
+books (BetUS, BetOnline, LowVig — no coincidence) pricing tighter than
+mainstream US books — directionally sensible on a small sample (1-4 games
+per book). The raw pull isn't committed (`data/raw/*` stays gitignored
+except the synthetic sample) — redistributing a paid provider's live feed
+doesn't belong in a public repo even on the free tier. Pull your own with
+`scripts/fetch_odds.py`.
+
+## Real MLB model: an honest null result
+
+`scripts/train_mlb_model.py` fetches every completed 2026 game from
+`statsapi.mlb.com` (1,444 games) and trains a logistic regression on
+point-in-time features — rolling runs scored/allowed, season run
+differential, last-10 win rate, and rest days, all home-minus-away diffs
+computed only from games strictly before the one predicted
+(`mlb_features.py`, tested directly: a later game's score can never change
+an earlier row). Home team is fixed by the real data, so home advantage is
+absorbed into the model's intercept rather than a separate feature.
+
+**Result on 286 real held-out games (2026-06-22 to 2026-07-12):**
+
+| Predictor | Accuracy | Log loss | Brier score |
+|---|---|---|---|
+| Model (logistic regression) | 49.0% | 0.6958 | 0.2513 |
+| Always predict home team (training home-win rate) | 47.9% | 0.6977 | 0.2523 |
+| Coin flip | 47.9% | 0.6931 | 0.2500 |
+
+Bootstrap 90% CI on accuracy: [44.1%, 53.5%] — straddles a coin flip. CI on
+log-loss improvement over the home-rate baseline: [-0.0040, +0.0075] —
+includes zero. **No statistically distinguishable edge over naive
+baselines.** Likely reason: single-game MLB outcomes are driven heavily by
+the **starting pitcher matchup**, which team-level rolling stats can't see
+at all — unlike NBA, where a five-man rotation dilutes any one player's
+effect. Starting-pitcher stats (ERA, FIP) are the obvious next feature,
+available from the same free API — not added here, to avoid tuning the
+model against the one held-out sample used to report it.
+
+Full report: `results/mlb_model_report.md` (isotonic calibration is
+visibly noisier than Platt here too, on an independent 172-game calibration
+set — same small-sample pattern as the synthetic case, now seen twice).
+
+## Results: synthetic NBA backtest
 
 Backtest on the synthetic held-out test period (240 games, 94 bets flagged
 by a 3-point model-vs-market edge threshold):
@@ -88,19 +162,12 @@ by a 3-point model-vs-market edge threshold):
 
 ![Bankroll and CLV](results/clv_plot.png)
 
-Raw ROI was *negative* over this sample, but average CLV was *consistently
-positive* (see the right-hand panel above — mostly green), and its confidence
-interval clears zero even at only 94 bets — ROI's doesn't. That's the whole
-point of leading with CLV instead of ROI: CLV is measured bet-by-bet against
-where the market itself ultimately settled, so it's a much lower-variance read
-on whether an edge is real than a single bankroll trajectory dominated by a
-7-game losing streak.
+Right-hand panel is mostly green: CLV was consistently positive even while
+the bankroll trajectory (left) whipsawed on a real losing streak — the case
+for CLV over ROI, visually.
 
-### Is this actually beating the market, or just beating a coin flip?
-
-The real bar in sports prediction isn't 50% — it's the market's own no-vig
-price, which is already a strong predictor. Scored against naive baselines on
-the identical held-out period:
+**Model vs. naive baselines**, same held-out period — the real bar isn't
+50%, it's the market's own no-vig price:
 
 | Predictor | Accuracy | Log loss | Brier score |
 |---|---|---|---|
@@ -109,83 +176,50 @@ the identical held-out period:
 | Always bet home team | 49.2% | 0.6994 | 0.2531 |
 | Coin flip | 44.2% | 0.6931 | 0.2500 |
 
-The model edges out "just trust the market" on log loss but loses to it on
-accuracy and Brier score — a wash, not a rout. That's the honest, expected
-result of a small-scale market-efficiency test: a six-feature logistic
-regression finding a large, dominant edge over the market's own price would be
-the red flag, not this. The genuine (if modest) finding here is in CLV, not in
-beating the market's point predictions outright.
+Edges the market on log loss, loses on accuracy and Brier — a wash, not a
+rout, which is the expected honest result: a six-feature model dominating
+the market's own price would be the red flag.
 
-### Does the model's probability mean what it says? (calibration)
-
-The flagged bets above skew toward underdogs (mean model probability 0.44 vs.
-mean no-vig market probability 0.33) — a plausible sign of an imperfectly
-calibrated model systematically "finding value" on long shots. The natural
-next question: does recalibrating the model's probabilities fix that?
-
-Fit a fresh model on 85% of the training period, held out the remaining 15%
-(144 games) purely for calibration, then compared raw vs. recalibrated
-probabilities on the same test period — both isotonic regression (flexible,
-but sklearn's own docs say it needs ~1000+ calibration samples to avoid
-overfitting the mapping itself) and Platt/sigmoid scaling (2 parameters, far
-less data-hungry):
+**Calibration.** The flagged bets skew toward underdogs (mean model
+probability 0.44 vs. mean market 0.33) — a plausible sign of "finding
+value" on long shots from imperfect calibration. Fit isotonic and Platt
+recalibrators on a held-out 144-game calibration set and re-evaluated:
 
 ![Reliability diagram](results/calibration_plot.png)
 
-Neither method meaningfully improved Brier score (raw 0.2353 vs. isotonic
-0.2424 vs. Platt 0.2368) — the raw model was already reasonably calibrated,
-and isotonic's curve is visibly noisier than Platt's, exactly what you'd
-expect from fitting a flexible nonparametric mapping on only 144 calibration
-games. **This is the honest result, not the one that was planned going in** —
-the original hypothesis was that calibration would fix the underdog-skewed
-bet selection; on this dataset it mostly didn't, and that's worth reporting
-rather than quietly dropping.
-
-What the calibration re-run *did* catch: the Platt-calibrated backtest posted
-a flashy **+33% ROI** — until the pipeline's own tail-risk diagnostic
-(`top_bet_pnl_share` in `backtest.py`) flagged that a single long-odds bet
-contributed **136% of total profit**, meaning the strategy was net negative on
-every other bet combined. One lucky longshot, not a validated edge. This is
-exactly the failure mode CLV is meant to catch and ROI is not, and now the
-backtest engine checks for it automatically on every run.
-
-Full report (regenerated by `scripts/run_backtest.py`, including the baseline
-and calibration tables above): `results/backtest_report.md`.
+Neither meaningfully improved Brier score (raw 0.2353, isotonic 0.2424,
+Platt 0.2368) — the raw model was already reasonably calibrated. Not the
+result the hypothesis predicted, reported anyway. What the re-run *did*
+catch: the Platt-calibrated backtest posted a flashy **+33% ROI**, until
+`top_bet_pnl_share` showed **136% of that profit came from one long-odds
+bet** — one lucky longshot, not an edge. Full report:
+`results/backtest_report.md`.
 
 ## Design decisions worth defending in an interview
 
-- **Chronological train/test split, never violated.** `model.chronological_split`
-  sorts by date and cuts a fixed fraction; `backtest.run_backtest` only ever
-  sees the held-out period. This is the first thing any quant interviewer
-  will probe, and the answer here is structural, not a promise.
-- **Half-Kelly, not full Kelly.** Full Kelly is provably optimal for
-  long-run log growth *given a correctly specified edge*, which a small
-  logistic regression on noisy features will never have exactly. Half-Kelly
-  trades some growth for a large reduction in variance and drawdown risk —
-  a deliberate, statable risk-management choice, not an arbitrary default.
-- **A hard bet-size cap independent of Kelly's output.** Kelly can size up
-  arbitrarily large positions when it estimates a large edge (exactly what
-  happened with the model's underdog-skewed picks, see Results); real books
-  limit or cut off sharp bettors long before that, so the backtest enforces
-  the same constraint rather than reporting a number that isn't achievable
-  in practice. Max drawdown was still -49.7% at a 5% cap and a 29.8% hit
-  rate — a reminder that "capped" isn't "safe," just safer.
-- **Simulated slippage.** The odds used for sizing are nudged slightly
-  against the bettor before the bet is "placed," since the price you decide
-  on and the price you actually get rarely match exactly in a fast-moving
-  market.
-- **CLV as the headline metric, not ROI.** See Results above.
-- **A tail-risk check the backtest engine runs automatically.**
-  `top_bet_pnl_share` reports what fraction of total profit came from the
-  single best bet. It's what caught the Platt-calibrated backtest's fake
-  +33% ROI (see Results) — a strategy whose entire profit sits in one
-  outlier hasn't demonstrated an edge, and a small backtest sample can hide
-  that without a check like this.
-- **Calibration was tested, not assumed.** Both isotonic and Platt scaling
-  were tried and compared against the raw model with a reliability diagram
-  and Brier score, on a calibration set kept separate from training and
-  test. Neither clearly won here — reported as-is rather than picking
-  whichever result looked better.
+- **Chronological train/test split, never violated.** Structural, not a
+  promise — `chronological_split` sorts by date and cuts a fixed fraction;
+  the backtest only ever sees what falls after that cut.
+- **Half-Kelly, not full Kelly.** Full Kelly is optimal only for a
+  *correctly specified* edge, which a small logistic regression never has
+  exactly. Trading some growth for a lot less variance is a deliberate,
+  statable choice.
+- **A hard bet-size cap independent of Kelly's output.** Kelly sizes up
+  arbitrarily on a large estimated edge (see the underdog skew above); real
+  books cap sharp bettors long before that, so the backtest does too. Still
+  a -49.7% max drawdown at a 5% cap — "capped" isn't "safe," just safer.
+- **Simulated slippage.** Odds are nudged against the bettor before a bet
+  is "placed" — the price you decide on and the price you get rarely match.
+- **CLV as the headline metric, not ROI, backed by a tail-risk check.** The
+  check (`top_bet_pnl_share`) exists because it caught something real (the
+  Platt +33%/136% case above), not as a box to tick.
+- **Calibration tested, not assumed** — isotonic and Platt both fit and
+  compared against the raw model, neither cherry-picked when it didn't win.
+- **Point-in-time feature engineering, tested directly.** `test_mlb_features.py`
+  literally changes a later game's score and asserts every earlier row is
+  unchanged — "we tested it" beats "we wrote it carefully."
+- **A null result reported as a null result.** The MLB model's non-finding
+  is in the README, not dropped for the more flattering synthetic numbers.
 
 ## What this deliberately doesn't do
 
@@ -214,12 +248,14 @@ cp .env.example .env   # add ODDS_API_KEY to pull live odds (optional)
 pytest
 ```
 
-92 tests across `probability`, `vig`, `arbitrage`, `kelly`, `clv`, `model`,
-`backtest`, `odds_client`, `utils`, `baselines`, `calibration`, and `stats` —
-including hand-checked example values for every formula in the spec, a
-planted arbitrage the scanner must detect, a chronological split the model
-must never leak across, and a tail-dominated P&L case the backtest's
-concentration check must flag.
+102 tests across `probability`, `vig`, `arbitrage`, `kelly`, `clv`, `model`,
+`backtest`, `odds_client`, `utils`, `baselines`, `calibration`, `stats`,
+`mlb_stats_client`, and `mlb_features` — including hand-checked example
+values for every formula in the spec, a planted arbitrage the scanner must
+detect, a chronological split the model must never leak across, a
+tail-dominated P&L case the backtest's concentration check must flag, and a
+point-in-time correctness check that a later real game can never change an
+earlier one's features.
 
 ## Repo structure
 
@@ -227,17 +263,21 @@ concentration check must flag.
 sports-market-efficiency/
 ├── config.py                  # env vars, paths, API defaults
 ├── src/                       # probability, vig, arbitrage, model, kelly, clv, backtest,
-│                              #   odds_client, utils, baselines, calibration, stats
+│                              #   odds_client, utils, baselines, calibration, stats,
+│                              #   mlb_stats_client, mlb_features
 ├── scripts/
 │   ├── fetch_odds.py          # pull live odds -> data/raw/
-│   └── run_backtest.py        # train + backtest -> results/
+│   ├── run_backtest.py        # synthetic NBA: train + backtest -> results/
+│   └── train_mlb_model.py     # real MLB: fetch + train + evaluate -> results/
 ├── data/
 │   ├── raw/                   # unmodified API pulls (gitignored, except the synthetic sample)
-│   └── processed/             # cleaned, joined datasets ready for analysis
+│   └── processed/             # nba_games_synthetic.csv, mlb_games_real.csv
 ├── notebooks/exploration.ipynb
 ├── tests/
 └── results/
-    ├── backtest_report.md
+    ├── backtest_report.md          # synthetic NBA backtest
     ├── clv_plot.png
-    └── calibration_plot.png
+    ├── calibration_plot.png
+    ├── mlb_model_report.md         # real MLB model evaluation
+    └── mlb_reliability_plot.png
 ```

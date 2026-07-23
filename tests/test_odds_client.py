@@ -8,8 +8,11 @@ from src.odds_client import OddsAPIClient, OddsAPIError, save_raw_pull
 
 class TestOddsAPIClient:
     def test_requires_api_key(self):
-        with pytest.raises(ValueError):
-            OddsAPIClient(api_key="")
+        # Patch out config.ODDS_API_KEY so this doesn't depend on whether a
+        # real .env happens to be present in the environment running the test.
+        with patch("src.odds_client.config.ODDS_API_KEY", None):
+            with pytest.raises(ValueError):
+                OddsAPIClient(api_key="")
 
     def test_get_odds_builds_expected_request(self):
         client = OddsAPIClient(api_key="test-key")
