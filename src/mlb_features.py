@@ -70,6 +70,49 @@ def build_features(games: list[dict]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def compute_current_features(completed_games: list[dict], home_team: str, away_team: str, as_of_date: str) -> dict | None:
+    """Compute point-in-time features for an upcoming (not-yet-played) matchup, as of
+    `as_of_date`, from a list of already-completed games (see mlb_stats_client.fetch_completed_games).
+
+    This is the live-pipeline counterpart to build_features: build_features only ever
+    emits a row for a game that's already in the input list (so it can read that game's
+    own home/away teams and pull the *prior* rolling state before updating it). A live
+    paper-trading pipeline needs the reverse -- "what would the model see today for a
+    game that hasn't been played yet" -- so this replays the same rolling state
+    (runs_scored/runs_allowed/results/last_game_date) over every game strictly before
+    `as_of_date`, then reads it for an arbitrary (home_team, away_team) pair rather than
+    for a game that's already a row in `completed_games`. Returns None if either team
+    has no game before `as_of_date` (same "first game of the season" rule as build_features).
+    """
+    prior_games = sorted(
+        (g for g in completed_games if g["date"] < as_of_date), key=lambda g: g["date"]
+    )
+
+    runs_scored = defaultdict(list)
+    runs_allowed = defaultdict(list)
+    results = defaultdict(list)
+    last_game_date: dict[str, str] = {}
+
+    for game in prior_games:
+        _update_state(game["home_team"], game["home_score"], game["away_score"], game["home_win"], game["date"],
+                      runs_scored, runs_allowed, results, last_game_date)
+        _update_state(game["away_team"], game["away_score"], game["home_score"], 1 - game["home_win"], game["date"],
+                      runs_scored, runs_allowed, results, last_game_date)
+
+    home_state = _team_state(home_team, runs_scored, runs_allowed, results, last_game_date, as_of_date)
+    away_state = _team_state(away_team, runs_scored, runs_allowed, results, last_game_date, as_of_date)
+    if home_state is None or away_state is None:
+        return None
+
+    return {
+        "runs_scored_diff": home_state["avg_runs_scored"] - away_state["avg_runs_scored"],
+        "runs_allowed_diff": away_state["avg_runs_allowed"] - home_state["avg_runs_allowed"],
+        "season_run_diff_diff": home_state["run_diff_per_game"] - away_state["run_diff_per_game"],
+        "recent_win_pct_diff": home_state["recent_win_pct"] - away_state["recent_win_pct"],
+        "rest_days_diff": home_state["rest_days"] - away_state["rest_days"],
+    }
+
+
 def _team_state(team, runs_scored, runs_allowed, results, last_game_date, current_date):
     if team not in last_game_date:
         return None

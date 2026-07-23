@@ -145,3 +145,63 @@ class TestRunBacktest:
         result = run_backtest(df, model, edge_threshold=0.03)
 
         assert result["top_bet_pnl_share"] is None
+
+
+class TestSlateExposureCap:
+    def make_same_day_slate(self, n_games=4):
+        # n games all on the same date -- a real slate, not one game per day
+        return pd.DataFrame(
+            {
+                "date": ["2025-03-10"] * n_games,
+                "pace_diff": [0.0] * n_games,
+                "off_rating_diff": [0.0] * n_games,
+                "def_rating_diff": [0.0] * n_games,
+                "recent_win_pct_diff": [0.0] * n_games,
+                "rest_days_diff": [0.0] * n_games,
+                "home_flag": [0] * n_games,
+                "team_a_win": [1] * n_games,
+                "market_odds_team_a": [100] * n_games,
+                "market_odds_team_b": [100] * n_games,
+                "closing_odds_team_a": [100] * n_games,
+            }
+        )
+
+    def test_slate_cap_binds_when_many_bets_flagged_same_day(self):
+        # 4 games same day, each would want max_bet_pct=0.10 individually -> 40%
+        # naive sum, well over a 15% slate cap.
+        df = self.make_same_day_slate(n_games=4)
+        model = DummyModel(prob=0.95)  # huge edge -> Kelly wants the full per-bet cap
+
+        result = run_backtest(
+            df, model, edge_threshold=0.03, max_bet_pct=0.10, max_slate_pct=0.15, starting_bankroll=10_000
+        )
+
+        assert result["num_bets"] == 4
+        total_stake_fraction = sum(b["stake_fraction"] for b in result["bet_log"])
+        assert total_stake_fraction == pytest.approx(0.15)
+        for b in result["bet_log"]:
+            assert b["stake_fraction"] == pytest.approx(0.15 / 4)
+
+    def test_slate_cap_does_not_bind_when_under_limit(self):
+        df = self.make_same_day_slate(n_games=2)
+        model = DummyModel(prob=0.95)
+
+        result = run_backtest(
+            df, model, edge_threshold=0.03, max_bet_pct=0.05, max_slate_pct=0.50, starting_bankroll=10_000
+        )
+
+        for b in result["bet_log"]:
+            assert b["stake_fraction"] == pytest.approx(0.05)
+
+    def test_same_day_bets_settle_against_the_same_starting_bankroll(self):
+        # All bets on the same slate should be sized off the day's *starting*
+        # bankroll, not sequentially compounded against each other.
+        df = self.make_same_day_slate(n_games=3)
+        model = DummyModel(prob=0.95)
+
+        result = run_backtest(
+            df, model, edge_threshold=0.03, max_bet_pct=0.05, max_slate_pct=0.50, starting_bankroll=10_000
+        )
+
+        for b in result["bet_log"]:
+            assert b["stake"] == pytest.approx(10_000 * 0.05)

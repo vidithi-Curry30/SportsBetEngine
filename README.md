@@ -29,20 +29,32 @@ defend every module.*
   expectation stated *before* running the experiment, not after. Predicting
   the size of an effect and then confirming it is a stronger signal than
   either the null result or the improvement alone.
-- **A tail-risk check the backtest runs automatically caught its own fake
-  result**: a calibration variant posted a flashy +33% ROI until
-  `top_bet_pnl_share` showed 136% of that profit came from one lucky
-  long-odds bet. Built the check *because* it caught something, not as a
-  box to tick.
-- **CLV, not ROI, is the headline metric** — on the synthetic backtest, raw
-  ROI was negative (-5.5%) but average CLV was positive with a bootstrap
-  confidence interval that clears zero (+2.64pp, 90% CI [+1.78, +3.49]);
-  ROI's own CI doesn't. That gap *is* the thesis of the project, demonstrated
-  with real numbers, not just asserted.
+- **A tail-risk check the backtest runs automatically flags its own headline
+  number**: the primary backtest's ROI reads as a nominally positive +6.3%,
+  but `top_bet_pnl_share` shows **634% of that profit came from a single
+  bet** — not a repeatable edge, a lucky outlier. The Platt-calibrated
+  variant shows the same pattern even more starkly (+46% ROI, 101%
+  concentration). Built the check *because* it keeps catching this, not as
+  a box to tick.
+- **CLV, not ROI, is the headline metric precisely because ROI is this
+  fragile** — on the synthetic backtest, average CLV is positive with a
+  bootstrap confidence interval that clears zero (+2.64pp, 90% CI [+1.78,
+  +3.49]) and, unlike ROI, doesn't hinge on any single bet's outcome. That
+  gap *is* the thesis of the project, demonstrated with real numbers, not
+  just asserted.
 - **The isotonic-vs-Platt calibration finding reproduced independently on
   two unrelated datasets** (synthetic NBA, real MLB) — same pattern both
   times, which is what makes it a real finding about small calibration sets
   rather than a one-off fluke worth a footnote.
+- **Slate-level portfolio risk, a market-making mode, and a forward-collecting
+  real-CLV pipeline were added on top of the original backtest** — the first
+  two extend the risk/pricing logic beyond a single bet in isolation; the
+  third turns the synthetic-backtest limitation above into a real, growing
+  dataset instead of just disclosing around it. All three are new
+  infrastructure with test coverage, not new results — see "Forward-collecting
+  real CLV," "Slate-level portfolio risk," and "Market making" below for what
+  each actually does and, for the paper-trading pipeline, an explicit
+  no-results-yet status.
 - Full detail on every point above is below, in "Real MLB model" and
   "Results: synthetic NBA backtest."
 
@@ -75,13 +87,18 @@ fully priced in the same information (i.e., before the closing line).
 | `src/mlb_stats_client.py` | Wraps the free, public MLB Stats API (`statsapi.mlb.com`) for real completed-game results and starting-pitcher game logs |
 | `src/mlb_features.py` | Point-in-time (no-lookahead) team-level feature engineering on real MLB games — see "Real MLB model" below |
 | `src/mlb_pitcher_features.py` | Point-in-time rolling ERA/K9 for starting pitchers, additive to the team features |
+| `src/portfolio_risk.py` | Slate-level exposure cap — scales every bet on an over-limit day down proportionally, on top of the existing per-bet Kelly cap |
+| `src/market_maker.py` | Quotes a two-sided line from a probability estimate (the sportsbook's side of the trade, not the bettor's) and simulates inventory-skew repricing against simulated flow |
+| `src/paper_trading.py` | Forward-collecting pipeline: line-shops a live multi-book pull against the model, logs a paper bet at today's real price, and reconciles it against the real closing price and result once the game finishes |
 
-Three commands run it end-to-end:
+Five commands run it end-to-end:
 
 ```bash
 python scripts/fetch_odds.py --sport baseball_mlb   # pull live odds (needs ODDS_API_KEY in .env)
 python scripts/run_backtest.py                      # synthetic NBA: train, backtest, write results/
 python scripts/train_mlb_model.py                   # real MLB: fetch, train, evaluate, write results/
+python scripts/collect_paper_trades.py              # real MLB: log today's live-odds edges as paper trades
+python scripts/reconcile_paper_trades.py            # real MLB: settle paper trades, write results/paper_trading_report.md
 ```
 
 ## A note on data
@@ -90,26 +107,71 @@ python scripts/train_mlb_model.py                   # real MLB: fetch, train, ev
 |---|---|
 | Live odds (arbitrage scanner) | **Real.** The Odds API, live key. |
 | Win-probability model | **Real.** Trained on real MLB games (`statsapi.mlb.com`). |
-| Backtest / CLV / Kelly sizing | **Synthetic**, structurally — see why. |
+| Backtest / CLV / Kelly sizing (`scripts/run_backtest.py`) | **Synthetic**, structurally — see why. |
+| Paper-trading CLV (`scripts/collect_paper_trades.py` + `reconcile_paper_trades.py`) | **Real, forward-collected**, growing one slate at a time — see below. |
 
 NBA is off-season (nothing live until October) and `stats.nba.com`/`nba_api`
 are unreachable from this environment anyway, so the default sport is
 `baseball_mlb`: The Odds API covers real odds, and the free `statsapi.mlb.com`
 covers real team stats and outcomes.
 
-The backtest/CLV/Kelly sizing can't follow the same path: they need real
+The backtest/CLV/Kelly sizing can't follow the same path *retroactively*: they need real
 *historical* odds (the price at bet time and at close, for games already
 played), and The Odds API's historical endpoint requires a paid plan
 (confirmed directly — a real request returns
 `HISTORICAL_UNAVAILABLE_ON_FREE_USAGE_PLAN`). Real *current* odds don't help
 retroactively. So `data/processed/nba_games_synthetic.csv` (hidden per-team
 "true strength," an opening line noisier than the closing line, by design)
-still backs `scripts/run_backtest.py` and the backtest results below — a
-paid plan or forward-collecting real lines from today are the only real fixes.
-Both synthetic datasets are generated by committed scripts
+still backs `scripts/run_backtest.py` and the backtest results below. Both
+synthetic datasets are generated by committed scripts
 (`scripts/generate_synthetic_nba_data.py`,
 `scripts/generate_synthetic_arbitrage_sample.py`, both seeded and
 reproducing the committed files byte-for-byte) rather than taken on faith.
+
+What *does* fix it without a paid plan: stop trying to buy history and collect it
+forward instead. See "Forward-collecting real CLV" below.
+
+## Forward-collecting real CLV (paper trading)
+
+`src/paper_trading.py` + `scripts/collect_paper_trades.py` / `reconcile_paper_trades.py`
+turn the synthetic-backtest limitation above into a real, growing dataset instead
+of working around it with more synthetic data:
+
+1. **`collect_paper_trades.py`** (run once a day, or a few times a day closer to
+   first pitch) fits a fresh model on every completed MLB game so far, pulls a live
+   multi-book odds snapshot, and for each of today's games: computes the model's
+   probability from current point-in-time features
+   (`mlb_features.compute_current_features` — the live counterpart to
+   `build_features`, replaying the same rolling-state logic for a matchup that
+   hasn't been played yet instead of one that's already a row), line-shops across
+   every book for the best price (`paper_trading.find_best_price`), and compares
+   the model to the **consensus no-vig price averaged across books**
+   (`consensus_no_vig_prob`) rather than any single book's line. This prints a live
+   edge-monitor report and logs any bet clearing `edge_threshold` to
+   `data/paper_trades/mlb_paper_trades.csv` at today's real price — nothing is
+   actually wagered, but the price, the model probability, and the size are all
+   real and captured before the outcome exists.
+2. **`reconcile_paper_trades.py`** (run after games finish) fetches the real result
+   from `statsapi.mlb.com` and a fresh odds pull for a closing-price proxy, computes
+   realized CLV and P&L per bet with `src/clv.calculate_clv`, and writes
+   `results/paper_trading_report.md` with the same bootstrap-CI treatment as the
+   other reports.
+
+**Why this is a stronger claim than a backtest, not a weaker one:** leakage is
+structurally impossible here — the bet is written to the ledger before the game is
+played, not selected afterward from a dataset where the outcome was always
+knowable. The honest tradeoff is sample size: it only grows by one slate a day, so
+it takes weeks to accumulate a sample worth reporting a confidence interval on.
+
+**Status: infrastructure only, no results yet.** This was just built and hasn't
+run forward for any length of time — `results/paper_trading_report.md` doesn't
+exist yet because there's nothing real to put in it. Reporting a number now would
+mean fabricating it. Run `collect_paper_trades.py` daily for a few weeks, then
+`reconcile_paper_trades.py`, and the report will reflect whatever actually happened,
+including a null result if that's what it is — same discipline as the rest of this
+project. The closing-odds proxy also has a stated limitation: it's the last price
+observed on whatever run happens to catch a game shortly before first pitch, not
+the literal final tick — see the docstring in `reconcile_paper_trades.py`.
 
 ## Live data: verified against a real Odds API pull
 
@@ -195,21 +257,30 @@ calibrated expectation, and that's what showed up. Full report:
 ## Results: synthetic NBA backtest
 
 Backtest on the synthetic held-out test period (240 games, 94 bets flagged
-by a 3-point model-vs-market edge threshold):
+by a 3-point model-vs-market edge threshold), run through the slate-aware
+engine described in "Slate-level portfolio risk" below (bets on the same day
+are batched and capped together, not sized sequentially one game at a time):
 
 | Metric | Value |
 |---|---|
 | Avg CLV | **+2.64 pp** (90% CI [+1.78, +3.49]) |
-| ROI | -5.5% (90% CI on mean per-bet return: [-1.26%, +2.11%]) |
+| ROI | +6.3% (90% CI on mean per-bet return: [-1.16%, +2.15%]) |
 | Hit rate | 29.8% |
-| Sharpe-like ratio | 0.03 |
-| Max drawdown | -49.7% |
+| Sharpe-like ratio | 0.042 |
+| Max drawdown | -37.0% |
+| Top-bet P&L share | **634%** |
 
 ![Bankroll and CLV](results/clv_plot.png)
 
-Right-hand panel is mostly green: CLV was consistently positive even while
-the bankroll trajectory (left) whipsawed on a real losing streak — the case
-for CLV over ROI, visually.
+**Read the ROI number and the top-bet P&L share together, not the ROI number
+alone.** +6.3% looks like a win. `top_bet_pnl_share` says 634% of that profit
+came from a single bet — the rest of the book is a net loser, and one long-odds
+result happened to land. That's the tail-risk check working exactly as
+designed: it doesn't just catch a *negative* result dressed up as positive,
+it catches a *positive* result that isn't real either. Avg CLV doesn't have
+this problem — no single bet's outcome can move a metric that's defined
+independently of whether any individual bet won or lost, which is the whole
+argument for leading with it instead of ROI.
 
 **Model vs. naive baselines**, same held-out period — the real bar isn't
 50%, it's the market's own no-vig price:
@@ -243,10 +314,55 @@ recalibrators on a held-out 144-game calibration set and re-evaluated:
 Neither meaningfully improved Brier score (raw 0.2353, isotonic 0.2424,
 Platt 0.2368) — the raw model was already reasonably calibrated. Not the
 result the hypothesis predicted, reported anyway. What the re-run *did*
-catch: the Platt-calibrated backtest posted a flashy **+33% ROI**, until
-`top_bet_pnl_share` showed **136% of that profit came from one long-odds
-bet** — one lucky longshot, not an edge. Full report:
+catch, again: the Platt-calibrated backtest posted a flashy **+46% ROI**,
+until `top_bet_pnl_share` showed **101% of that profit came from one
+long-odds bet** — one lucky longshot, not an edge, the same pattern the
+primary backtest's own 634% already showed above. Full report:
 `results/backtest_report.md`.
+
+## Slate-level portfolio risk
+
+`src/portfolio_risk.py` + `src/backtest.py` address a gap the original single-bet
+Kelly sizing had: `max_bet_pct` caps any *one* bet, but says nothing about the sum
+of everything flagged on the same day. A real MLB slate can have 10-15 games; if
+each independently-capped bet gets sized as if it were the only bet that day, a
+day with many flagged edges can commit a much larger fraction of the bankroll than
+any single-position limit implies — exactly the kind of aggregate exposure a real
+desk caps at the book/slate level, not just per position.
+
+`run_backtest` now batches every game by date, sizes each flagged bet's stake
+against that day's *starting* bankroll (all of a day's bets are decided and placed
+before any of that day's results are known — they aren't sequentially compounded
+against each other), and then `apply_slate_exposure_cap` scales every stake on an
+over-limit day down proportionally, preserving the bigger-edge-gets-a-bigger-stake
+ordering rather than dropping bets. Default cap: 20% of bankroll per slate, on top
+of the existing 5%-per-bet cap. `tests/test_backtest.py::TestSlateExposureCap`
+covers both the binding and non-binding cases directly.
+
+## Market making
+
+Every other module in this repo *consumes* a market's price — asks "does the
+model disagree with what's quoted enough to bet." `src/market_maker.py` inverts
+the question, because that's the other side of this trade and the one an actual
+prop or sportsbook trading desk sits on: given a private probability estimate,
+**set** a two-sided price.
+
+- `quote_from_probability` turns a true win-probability into two-sided American
+  odds embedding a target vig, via `probability.add_vig` — the literal inverse of
+  `probability.remove_vig`, which every other module uses to strip vig back out.
+- `simulate_flow_and_reprice` simulates a stream of bettors with noisy private
+  beliefs trading against that quote, tracks the maker's signed inventory (net
+  exposure to one side), and reprices — skews the line to make an overbet side
+  less attractive — once inventory crosses a threshold, the standard market-making
+  response to one-sided flow. A fully-informed, symmetric-belief population
+  self-corrects back to the fair price after each reprice
+  (`test_deterministic_symmetric_flow_self_corrects`, hand-verified with a fixed
+  seed) rather than drifting — a real, if simplified, property of quoting from the
+  same information your counterparties have, not an artifact of the toy setup.
+
+Deliberately kept small: one game, one round of flow, a linear reprice rule. The
+point is demonstrating the quote → inventory → skew mechanism directly, not
+building a production market-making engine.
 
 ## Design decisions worth defending in an interview
 
@@ -260,12 +376,17 @@ bet** — one lucky longshot, not an edge. Full report:
 - **A hard bet-size cap independent of Kelly's output.** Kelly sizes up
   arbitrarily on a large estimated edge (see the underdog skew above); real
   books cap sharp bettors long before that, so the backtest does too. Still
-  a -49.7% max drawdown at a 5% cap — "capped" isn't "safe," just safer.
+  a -37.0% max drawdown at a 5% per-bet cap — "capped" isn't "safe," just safer.
+- **A slate-level exposure cap on top of the per-bet cap.** A per-bet cap alone
+  says nothing about what a day with many flagged edges commits in aggregate;
+  `apply_slate_exposure_cap` limits the whole day's exposure, not just any one
+  bet in it — see "Slate-level portfolio risk" above.
 - **Simulated slippage.** Odds are nudged against the bettor before a bet
   is "placed" — the price you decide on and the price you get rarely match.
 - **CLV as the headline metric, not ROI, backed by a tail-risk check.** The
-  check (`top_bet_pnl_share`) exists because it caught something real (the
-  Platt +33%/136% case above), not as a box to tick.
+  check (`top_bet_pnl_share`) exists because it keeps catching something real —
+  even the primary backtest's positive-looking +6.3% ROI turned out to be 634%
+  concentrated in one bet (above) — not because it's a box to tick.
 - **Calibration tested, not assumed** — isotonic and Platt both fit and
   compared against the raw model, neither cherry-picked when it didn't win.
 - **Every "the model beats X" claim carries a significance test, not just a
@@ -284,8 +405,9 @@ bet** — one lucky longshot, not an edge. Full report:
 
 ## What this deliberately doesn't do
 
-- No live or real-money betting integration — this is a research/backtesting
-  project, not a betting app.
+- No real-money betting integration — `paper_trading.py` logs what a bet *would*
+  have been, at a real price, for later reconciliation; nothing is ever actually
+  wagered. This is a research/backtesting project, not a betting app.
 - No database. Flat CSV/JSON under `data/` is sufficient and easier to
   explain in an interview than a schema; a Postgres/Timescale backend would
   be the natural next step if this needed to run continuously rather than
@@ -294,6 +416,10 @@ bet** — one lucky longshot, not an edge. Full report:
   for six engineered features and ~1000 games — a simple, fully-understood
   model beats a complex one you can't defend when asked "why this
   architecture?"
+- No production market-making engine. `market_maker.py` demonstrates the
+  quote/inventory/reprice mechanism on one game and one round of flow; a real
+  book runs this continuously across a whole slate with far more sophisticated
+  flow modeling.
 
 ## Setup
 
@@ -309,14 +435,19 @@ cp .env.example .env   # add ODDS_API_KEY to pull live odds (optional)
 pytest
 ```
 
-123 tests across `probability`, `vig`, `arbitrage`, `kelly`, `clv`, `model`,
+170 tests across `probability`, `vig`, `arbitrage`, `kelly`, `clv`, `model`,
 `backtest`, `odds_client`, `utils`, `baselines`, `calibration`, `stats`,
-`mlb_stats_client`, `mlb_features`, and `mlb_pitcher_features` — including
-hand-checked example values for every formula in the spec, a planted
-arbitrage the scanner must detect, a chronological split the model must
-never leak across, a tail-dominated P&L case the backtest's concentration
-check must flag, and a point-in-time correctness check (for both team and
-pitcher features) that a later real game can never change an earlier one's.
+`mlb_stats_client`, `mlb_features`, `mlb_pitcher_features`, `portfolio_risk`,
+`market_maker`, and `paper_trading` — including hand-checked example values
+for every formula in the spec, a planted arbitrage the scanner must detect,
+a chronological split the model must never leak across, a tail-dominated
+P&L case the backtest's concentration check must flag, a point-in-time
+correctness check (for both team and pitcher features, live and historical)
+that a later real game can never change an earlier one's, a slate that
+forces the portfolio exposure cap to bind, a deterministic market-making
+flow that self-corrects back to the fair price, and a paper-trade ledger
+round-trip (log → dedupe → reconcile) against synthetic odds payloads shaped
+like a real Odds API response.
 
 ## Repo structure
 
@@ -325,15 +456,19 @@ sports-market-efficiency/
 ├── config.py                  # env vars, paths, API defaults
 ├── src/                       # probability, vig, arbitrage, model, kelly, clv, backtest,
 │                              #   odds_client, utils, baselines, calibration, stats,
-│                              #   mlb_stats_client, mlb_features, mlb_pitcher_features
+│                              #   mlb_stats_client, mlb_features, mlb_pitcher_features,
+│                              #   portfolio_risk, market_maker, paper_trading
 ├── scripts/
 │   ├── fetch_odds.py                      # pull live odds -> data/raw/
 │   ├── run_backtest.py                    # synthetic NBA: train + backtest -> results/
 │   ├── train_mlb_model.py                 # real MLB: fetch + train + evaluate -> results/
-│   └── train_mlb_model_with_pitching.py   # does adding pitcher features help? -> results/
+│   ├── train_mlb_model_with_pitching.py   # does adding pitcher features help? -> results/
+│   ├── collect_paper_trades.py            # real MLB: log today's live-odds edges
+│   └── reconcile_paper_trades.py          # real MLB: settle + write paper_trading_report.md
 ├── data/
 │   ├── raw/                   # unmodified API pulls (gitignored, except the synthetic sample)
-│   └── processed/             # nba_games_synthetic.csv, mlb_games_real.csv
+│   ├── processed/             # nba_games_synthetic.csv, mlb_games_real.csv
+│   └── paper_trades/          # forward-collected paper-trade ledger (gitignored, real data)
 ├── notebooks/exploration.ipynb
 ├── tests/
 └── results/
@@ -342,5 +477,6 @@ sports-market-efficiency/
     ├── calibration_plot.png
     ├── mlb_model_report.md              # real MLB model evaluation
     ├── mlb_reliability_plot.png
-    └── mlb_pitcher_features_report.md   # team-only vs. team+pitcher comparison
+    ├── mlb_pitcher_features_report.md   # team-only vs. team+pitcher comparison
+    └── paper_trading_report.md          # real forward-collected CLV (written once run)
 ```
