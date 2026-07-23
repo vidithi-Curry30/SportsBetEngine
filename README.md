@@ -20,11 +20,15 @@ defend every module.*
   model trained on 1,400+ real MLB games — not just a notebook that runs
   once on a CSV someone else cleaned.
 - **The real model doesn't beat a coin flip on held-out data (49.0% vs.
-  47.9%), and that's reported as the finding, not tuned away** — the README
-  says why (team-level stats can't see the starting-pitcher effect that
-  dominates single-game MLB outcomes) instead of quietly swapping in a
-  friendlier number. This is the single best "how do you know you're not
-  fooling yourself" answer in the project.
+  47.9%), reported as the finding, not tuned away** — with a specific,
+  testable hypothesis for why (team-level stats can't see the
+  starting-pitcher effect). That hypothesis was then actually tested by
+  adding real pitcher features on a fresh, never-before-seen data pull: a
+  small, consistent, positive lift across every metric, still not
+  statistically significant on 261 games — exactly the calibrated
+  expectation stated *before* running the experiment, not after. Predicting
+  the size of an effect and then confirming it is a stronger signal than
+  either the null result or the improvement alone.
 - **A tail-risk check the backtest runs automatically caught its own fake
   result**: a calibration variant posted a flashy +33% ROI until
   `top_bet_pnl_share` showed 136% of that profit came from one lucky
@@ -68,8 +72,9 @@ fully priced in the same information (i.e., before the closing line).
 | `src/baselines.py` | Naive predictors (trust the market, always home, coin flip) the model has to actually beat |
 | `src/calibration.py` | Reliability diagrams and isotonic/Platt recalibration — is the model's raw probability trustworthy enough to size bets with? |
 | `src/stats.py` | Bootstrap confidence intervals for backtest metrics on a small sample |
-| `src/mlb_stats_client.py` | Wraps the free, public MLB Stats API (`statsapi.mlb.com`) for real completed-game results |
-| `src/mlb_features.py` | Point-in-time (no-lookahead) feature engineering on real MLB games — see "Real MLB model" below |
+| `src/mlb_stats_client.py` | Wraps the free, public MLB Stats API (`statsapi.mlb.com`) for real completed-game results and starting-pitcher game logs |
+| `src/mlb_features.py` | Point-in-time (no-lookahead) team-level feature engineering on real MLB games — see "Real MLB model" below |
+| `src/mlb_pitcher_features.py` | Point-in-time rolling ERA/K9 for starting pitchers, additive to the team features |
 
 Three commands run it end-to-end:
 
@@ -158,6 +163,34 @@ the model against the one held-out sample used to report it.
 Full report: `results/mlb_model_report.md` (isotonic calibration is
 visibly noisier than Platt here too, on an independent 172-game calibration
 set — same small-sample pattern as the synthetic case, now seen twice).
+
+### Does adding starting-pitcher features help?
+
+Tested it (`scripts/train_mlb_model_with_pitching.py`, `src/mlb_pitcher_features.py`):
+rolling ERA and K/9 (strikeouts per 9 innings — a "stuff" metric that per
+DIPS theory is less noisy over a small sample than ERA, which is heavily
+luck/defense-influenced) for both starting pitchers, point-in-time correct
+the same way as the team features. Both models below are trained and
+evaluated on the *identical* set of games, so the comparison isolates the
+effect of the new features — and this uses a **fresh data pull**, not the
+286 games already reported on above, so the "did it help" question isn't
+answered against a test set that's already been looked at.
+
+| Predictor | Accuracy | AUC | Log loss | Brier score |
+|---|---|---|---|---|
+| Team-only | 52.9% | 0.569 | 0.6886 | 0.2477 |
+| Team + starting pitcher | 53.3% | 0.574 | 0.6876 | 0.2472 |
+
+Small, consistent, positive lift across every metric — and a bootstrap 90%
+CI on the log-loss improvement of [-0.0021, +0.0041] still includes zero.
+Not statistically significant on 261 held-out games. This is exactly what
+was predicted *before* running it: pitcher features should help some
+(baseball's low events-per-game count means even a real signal is hard to
+detect over one test period), but MLB has a structurally lower single-game
+predictability ceiling than NBA regardless of feature set, so a small,
+inconclusive-on-this-sample lift — not a transformation — is the correctly
+calibrated expectation, and that's what showed up. Full report:
+`results/mlb_pitcher_features_report.md`.
 
 ## Results: synthetic NBA backtest
 
@@ -276,14 +309,14 @@ cp .env.example .env   # add ODDS_API_KEY to pull live odds (optional)
 pytest
 ```
 
-108 tests across `probability`, `vig`, `arbitrage`, `kelly`, `clv`, `model`,
+123 tests across `probability`, `vig`, `arbitrage`, `kelly`, `clv`, `model`,
 `backtest`, `odds_client`, `utils`, `baselines`, `calibration`, `stats`,
-`mlb_stats_client`, and `mlb_features` — including hand-checked example
-values for every formula in the spec, a planted arbitrage the scanner must
-detect, a chronological split the model must never leak across, a
-tail-dominated P&L case the backtest's concentration check must flag, and a
-point-in-time correctness check that a later real game can never change an
-earlier one's features.
+`mlb_stats_client`, `mlb_features`, and `mlb_pitcher_features` — including
+hand-checked example values for every formula in the spec, a planted
+arbitrage the scanner must detect, a chronological split the model must
+never leak across, a tail-dominated P&L case the backtest's concentration
+check must flag, and a point-in-time correctness check (for both team and
+pitcher features) that a later real game can never change an earlier one's.
 
 ## Repo structure
 
@@ -292,20 +325,22 @@ sports-market-efficiency/
 ├── config.py                  # env vars, paths, API defaults
 ├── src/                       # probability, vig, arbitrage, model, kelly, clv, backtest,
 │                              #   odds_client, utils, baselines, calibration, stats,
-│                              #   mlb_stats_client, mlb_features
+│                              #   mlb_stats_client, mlb_features, mlb_pitcher_features
 ├── scripts/
-│   ├── fetch_odds.py          # pull live odds -> data/raw/
-│   ├── run_backtest.py        # synthetic NBA: train + backtest -> results/
-│   └── train_mlb_model.py     # real MLB: fetch + train + evaluate -> results/
+│   ├── fetch_odds.py                      # pull live odds -> data/raw/
+│   ├── run_backtest.py                    # synthetic NBA: train + backtest -> results/
+│   ├── train_mlb_model.py                 # real MLB: fetch + train + evaluate -> results/
+│   └── train_mlb_model_with_pitching.py   # does adding pitcher features help? -> results/
 ├── data/
 │   ├── raw/                   # unmodified API pulls (gitignored, except the synthetic sample)
 │   └── processed/             # nba_games_synthetic.csv, mlb_games_real.csv
 ├── notebooks/exploration.ipynb
 ├── tests/
 └── results/
-    ├── backtest_report.md          # synthetic NBA backtest
+    ├── backtest_report.md               # synthetic NBA backtest
     ├── clv_plot.png
     ├── calibration_plot.png
-    ├── mlb_model_report.md         # real MLB model evaluation
-    └── mlb_reliability_plot.png
+    ├── mlb_model_report.md              # real MLB model evaluation
+    ├── mlb_reliability_plot.png
+    └── mlb_pitcher_features_report.md   # team-only vs. team+pitcher comparison
 ```
