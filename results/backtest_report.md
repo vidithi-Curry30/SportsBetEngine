@@ -6,20 +6,20 @@ Held-out test period: 2025-03-09 to 2025-04-12 (240 games)
 ## Results
 
 - **Average CLV (the metric that matters more than raw ROI over a small sample): +2.64 percentage points**
-- ROI: -5.50%
-- Sharpe-like ratio: 0.035
-- Max drawdown: -49.68%
+- ROI: 6.32%
+- Sharpe-like ratio: 0.042
+- Max drawdown: -37.03%
 - Hit rate: 29.8%
 - Bets placed: 94 / 240 games scanned
-- Final bankroll: $9,449.52 (started at $10,000.00)
-- Top-bet P&L share: n/a (no net profit) (share of total profit from the single best bet -- high values mean the result rests on one outlier, not a repeatable edge)
+- Final bankroll: $10,632.27 (started at $10,000.00)
+- Top-bet P&L share: 634% (share of total profit from the single best bet -- high values mean the result rests on one outlier, not a repeatable edge)
 
 ![Bankroll and CLV](clv_plot.png)
 
 ## Is 94 bets enough to tell edge from noise? (bootstrap 90% CI)
 
 - Avg CLV: +2.64pp, 90% CI [+1.78, +3.49]pp
-- Mean per-bet return: +0.34%, 90% CI [-1.26%, +2.11%]
+- Mean per-bet return: +0.40%, 90% CI [-1.16%, +2.15%]
 
 ## Model vs. naive baselines (same held-out period)
 
@@ -44,11 +44,11 @@ Backtest re-run on the identical test period for each:
 
 | Metric | Raw | Isotonic | Platt |
 |---|---|---|---|
-| ROI | -0.90% | -3.23% | 32.99% |
+| ROI | 9.00% | -0.06% | 46.00% |
 | Avg CLV (pp) | +2.52 | +2.49 | +1.99 |
 | Hit rate | 29.5% | 36.0% | 30.5% |
 | Bets placed | 95 | 86 | 95 |
-| Max drawdown | -47.76% | -47.16% | -37.72% |
-| Top-bet P&L share | n/a (no net profit) | n/a (no net profit) | 136% |
+| Max drawdown | -37.26% | -45.09% | -31.64% |
+| Top-bet P&L share | 447% | n/a (no net profit) | 101% |
 
 ![Reliability diagram](calibration_plot.png)

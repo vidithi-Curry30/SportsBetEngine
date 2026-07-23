@@ -13,7 +13,8 @@ import pandas as pd
 from src.clv import calculate_clv
 from src.kelly import fractional_kelly, kelly_fraction
 from src.model import has_value_edge, predict_win_probability
-from src.probability import american_to_probability, remove_vig
+from src.portfolio_risk import apply_slate_exposure_cap
+from src.probability import american_to_probability, probability_to_american, remove_vig
 
 
 def american_to_decimal(odds: int) -> float:
@@ -27,13 +28,7 @@ def apply_slippage(odds: int, slippage_pct: float) -> int:
     simulating the line moving between the bet decision and the bet actually being placed."""
     prob = american_to_probability(odds)
     slipped_prob = min(0.99, prob + slippage_pct)
-    return _probability_to_american(slipped_prob)
-
-
-def _probability_to_american(prob: float) -> int:
-    if prob >= 0.5:
-        return round(-100 * prob / (1 - prob))
-    return round(100 * (1 - prob) / prob)
+    return probability_to_american(slipped_prob)
 
 
 def run_backtest(
@@ -44,6 +39,7 @@ def run_backtest(
     max_bet_pct: float = 0.05,
     edge_threshold: float = 0.03,
     slippage_pct: float = 0.005,
+    max_slate_pct: float = 0.20,
     probability_fn: Optional[Callable] = None,
 ) -> dict:
     """Run the backtest over `test_df` (the held-out period from model.chronological_split
@@ -57,6 +53,13 @@ def run_backtest(
     model.predict_win_probability) or `probability_fn` (any callable taking a
     game row and returning a probability -- e.g. a calibration.IsotonicCalibrator)
     to control how win probability is estimated.
+
+    Bets are batched by date: every flagged bet on the same date is sized against
+    that day's starting bankroll (not sequentially compounded against each other,
+    since a real slate is decided and placed simultaneously, not one game at a
+    time as results trickle in), then `portfolio_risk.apply_slate_exposure_cap`
+    scales every stake on an over-limit day down proportionally -- a real desk's
+    per-slate risk limit, on top of the existing per-bet `max_bet_pct` cap.
     """
     if probability_fn is None:
         if model is None:
@@ -64,52 +67,81 @@ def run_backtest(
         probability_fn = lambda game: predict_win_probability(model, game)  # noqa: E731
 
     sorted_df = test_df.sort_values("date").reset_index(drop=True)
+    num_games = len(sorted_df)
 
     bankroll = starting_bankroll
     bankroll_series = [bankroll]
     bet_log = []
 
-    for _, game in sorted_df.iterrows():
-        model_prob = probability_fn(game)
-        market_prob_a = american_to_probability(game["market_odds_team_a"])
-        market_prob_b = american_to_probability(game["market_odds_team_b"])
-        no_vig_prob_a, _ = remove_vig(market_prob_a, market_prob_b)
+    for _, day_games in sorted_df.groupby("date", sort=True):
+        day_start_bankroll = bankroll
+        candidates = []
 
-        if not has_value_edge(model_prob, no_vig_prob_a, threshold=edge_threshold):
-            bankroll_series.append(bankroll)
-            continue
+        for _, game in day_games.iterrows():
+            model_prob = probability_fn(game)
+            market_prob_a = american_to_probability(game["market_odds_team_a"])
+            market_prob_b = american_to_probability(game["market_odds_team_b"])
+            no_vig_prob_a, _ = remove_vig(market_prob_a, market_prob_b)
 
-        placed_odds = apply_slippage(game["market_odds_team_a"], slippage_pct)
-        decimal_odds = american_to_decimal(placed_odds)
+            if not has_value_edge(model_prob, no_vig_prob_a, threshold=edge_threshold):
+                continue
 
-        f_star = kelly_fraction(model_prob, decimal_odds)
-        stake_fraction = max(0.0, min(fractional_kelly(f_star, kelly_fraction_mult), max_bet_pct))
-        stake = bankroll * stake_fraction
+            placed_odds = apply_slippage(game["market_odds_team_a"], slippage_pct)
+            decimal_odds = american_to_decimal(placed_odds)
 
-        won = bool(game["team_a_win"])
-        pnl = stake * (decimal_odds - 1) if won else -stake
-        bankroll += pnl
+            f_star = kelly_fraction(model_prob, decimal_odds)
+            stake_fraction = max(0.0, min(fractional_kelly(f_star, kelly_fraction_mult), max_bet_pct))
+
+            candidates.append(
+                {
+                    "game": game,
+                    "model_prob": model_prob,
+                    "no_vig_market_prob": no_vig_prob_a,
+                    "placed_odds": placed_odds,
+                    "decimal_odds": decimal_odds,
+                    "stake_fraction": stake_fraction,
+                }
+            )
+
+        candidates = apply_slate_exposure_cap(candidates, max_slate_pct=max_slate_pct)
+
+        day_bets = []
+        for c in candidates:
+            game = c["game"]
+            stake = day_start_bankroll * c["stake_fraction"]
+            won = bool(game["team_a_win"])
+            pnl = stake * (c["decimal_odds"] - 1) if won else -stake
+
+            day_bets.append(
+                {
+                    "date": game["date"],
+                    "model_prob": c["model_prob"],
+                    "no_vig_market_prob": c["no_vig_market_prob"],
+                    "placed_odds": c["placed_odds"],
+                    "stake": stake,
+                    "stake_fraction": c["stake_fraction"],
+                    "won": won,
+                    "pnl": pnl,
+                    "clv": calculate_clv(c["placed_odds"], game["closing_odds_team_a"]),
+                    "bankroll_before": day_start_bankroll,
+                }
+            )
+
+        # All bets on a slate are placed simultaneously (before any of that day's
+        # results are known), so every bet's post-settlement bankroll is the same:
+        # the bankroll at the end of the day, once the whole day's results are in.
+        day_pnl = sum(b["pnl"] for b in day_bets)
+        bankroll = day_start_bankroll + day_pnl
+        for b in day_bets:
+            b["bankroll_after"] = bankroll
+        bet_log.extend(day_bets)
+
         bankroll_series.append(bankroll)
 
-        bet_log.append(
-            {
-                "date": game["date"],
-                "model_prob": model_prob,
-                "no_vig_market_prob": no_vig_prob_a,
-                "placed_odds": placed_odds,
-                "stake": stake,
-                "stake_fraction": stake_fraction,
-                "won": won,
-                "pnl": pnl,
-                "clv": calculate_clv(placed_odds, game["closing_odds_team_a"]),
-                "bankroll_after": bankroll,
-            }
-        )
-
-    return _summarize(bankroll_series, bet_log, starting_bankroll)
+    return _summarize(bankroll_series, bet_log, starting_bankroll, num_games)
 
 
-def _summarize(bankroll_series: list[float], bet_log: list[dict], starting_bankroll: float) -> dict:
+def _summarize(bankroll_series: list[float], bet_log: list[dict], starting_bankroll: float, num_games: int) -> dict:
     final_bankroll = bankroll_series[-1]
     roi = (final_bankroll - starting_bankroll) / starting_bankroll
 
@@ -118,7 +150,7 @@ def _summarize(bankroll_series: list[float], bet_log: list[dict], starting_bankr
     max_drawdown = float(((bankroll_arr - running_max) / running_max).min())
 
     if bet_log:
-        per_bet_returns = [b["pnl"] / (b["bankroll_after"] - b["pnl"]) for b in bet_log]
+        per_bet_returns = [b["pnl"] / b["bankroll_before"] for b in bet_log]
         mean_return = float(np.mean(per_bet_returns))
         std_return = float(np.std(per_bet_returns))
         sharpe_like_ratio = mean_return / std_return if std_return > 0 else 0.0
@@ -144,7 +176,7 @@ def _summarize(bankroll_series: list[float], bet_log: list[dict], starting_bankr
         "hit_rate": hit_rate,
         "top_bet_pnl_share": top_bet_pnl_share,
         "num_bets": len(bet_log),
-        "num_games": len(bankroll_series) - 1,
+        "num_games": num_games,
         "bankroll_series": bankroll_series,
         "bet_log": bet_log,
     }
