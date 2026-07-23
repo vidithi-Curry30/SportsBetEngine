@@ -136,6 +136,41 @@ class TestBuildPaperTradeRows:
         assert rows[0]["status"] == "open"
         assert 0 < rows[0]["stake_fraction"] <= 0.05
 
+    def make_flagged_edge(self, game_date, home, away, model_prob=0.90, odds=-110):
+        return {
+            "game_date": game_date, "home_team": home, "away_team": away,
+            "model_prob": model_prob, "no_vig_market_prob": 0.50, "edge": model_prob - 0.50,
+            "best_book": "BookA", "best_home_odds": odds, "has_value_edge": True,
+        }
+
+    def test_slate_cap_binds_across_same_day_flagged_edges(self):
+        # 4 games same date, each independently capped at max_bet_pct=0.10 ->
+        # 40% naive sum, well over a 15% slate cap -- same scenario backtest.py's
+        # slate cap was built for, now exercised on the live paper-trading path.
+        edges_df = pd.DataFrame(
+            [self.make_flagged_edge("2026-07-23", f"Home{i}", f"Away{i}") for i in range(4)]
+        )
+        rows = build_paper_trade_rows(
+            edges_df, snapshot_time="t0", max_bet_pct=0.10, max_slate_pct=0.15
+        )
+
+        assert len(rows) == 4
+        assert sum(r["stake_fraction"] for r in rows) == pytest.approx(0.15)
+
+    def test_slate_cap_does_not_cross_dates(self):
+        # Two flagged games on different dates must each be capped independently,
+        # not pooled together into one combined slate.
+        edges_df = pd.DataFrame(
+            [
+                self.make_flagged_edge("2026-07-23", "A", "B"),
+                self.make_flagged_edge("2026-07-24", "C", "D"),
+            ]
+        )
+        rows = build_paper_trade_rows(edges_df, snapshot_time="t0", max_bet_pct=0.10, max_slate_pct=0.15)
+
+        assert len(rows) == 2
+        assert all(r["stake_fraction"] == pytest.approx(0.10) for r in rows)
+
 
 class TestLedgerRoundTrip:
     def test_load_missing_ledger_returns_empty_frame_with_columns(self, tmp_path):

@@ -26,6 +26,7 @@ import pandas as pd
 from src.clv import calculate_clv
 from src.kelly import fractional_kelly, kelly_fraction
 from src.model import has_value_edge
+from src.portfolio_risk import apply_slate_exposure_cap
 from src.probability import american_to_probability, remove_vig
 
 LEDGER_COLUMNS = [
@@ -155,12 +156,17 @@ def build_paper_trade_rows(
     snapshot_time: str,
     kelly_fraction_mult: float = 0.5,
     max_bet_pct: float = 0.05,
+    max_slate_pct: float = 0.20,
 ) -> list[dict]:
     """Turn the flagged rows of a compute_live_edges() result into paper-trade
-    ledger rows, sized the same way run_backtest sizes a real bet (fractional
-    Kelly, capped) -- but nothing is actually wagered; this only logs the bet
-    that *would* have been placed, at today's real price, for later reconciliation."""
-    rows = []
+    ledger rows, sized the same way run_backtest sizes a real bet: fractional
+    Kelly, capped per bet, *and* capped in aggregate per slate
+    (portfolio_risk.apply_slate_exposure_cap) -- a live MLB pull can flag
+    several games on the same date, exactly the scenario that cap exists for,
+    same as the batched-by-date logic in backtest.run_backtest. Nothing is
+    actually wagered; this only logs the bet that *would* have been placed,
+    at today's real price, for later reconciliation."""
+    candidates = []
     for _, edge in edges_df[edges_df["has_value_edge"]].iterrows():
         if pd.isna(edge["best_home_odds"]):
             continue
@@ -170,7 +176,7 @@ def build_paper_trade_rows(
         f_star = kelly_fraction(edge["model_prob"], decimal_odds)
         stake_fraction = max(0.0, min(fractional_kelly(f_star, kelly_fraction_mult), max_bet_pct))
 
-        rows.append(
+        candidates.append(
             {
                 "game_date": edge["game_date"],
                 "home_team": edge["home_team"],
@@ -189,6 +195,11 @@ def build_paper_trade_rows(
                 "pnl": None,
             }
         )
+
+    rows = []
+    for game_date in sorted({c["game_date"] for c in candidates}):
+        slate = [c for c in candidates if c["game_date"] == game_date]
+        rows.extend(apply_slate_exposure_cap(slate, max_slate_pct=max_slate_pct))
     return rows
 
 
