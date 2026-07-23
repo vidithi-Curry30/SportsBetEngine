@@ -17,8 +17,8 @@ defend every module.*
 
 - **The pipeline is real end-to-end**, not a toy: a live Odds API key, a real
   arbitrage scan against actual multi-book prices, and a real predictive
-  model trained on 1,444 real MLB games — not just a notebook that runs once
-  on a CSV someone else cleaned.
+  model trained on 1,400+ real MLB games — not just a notebook that runs
+  once on a CSV someone else cleaned.
 - **The real model doesn't beat a coin flip on held-out data (49.0% vs.
   47.9%), and that's reported as the finding, not tuned away** — the README
   says why (team-level stats can't see the starting-pitcher effect that
@@ -122,7 +122,8 @@ doesn't belong in a public repo even on the free tier. Pull your own with
 ## Real MLB model: an honest null result
 
 `scripts/train_mlb_model.py` fetches every completed 2026 game from
-`statsapi.mlb.com` (1,444 games) and trains a logistic regression on
+`statsapi.mlb.com` (1,445 games as of this run — it's a live pull, so the
+count grows daily) and trains a logistic regression on
 point-in-time features — rolling runs scored/allowed, season run
 differential, last-10 win rate, and rest days, all home-minus-away diffs
 computed only from games strictly before the one predicted
@@ -130,23 +131,29 @@ computed only from games strictly before the one predicted
 an earlier row). Home team is fixed by the real data, so home advantage is
 absorbed into the model's intercept rather than a separate feature.
 
-**Result on 286 real held-out games (2026-06-22 to 2026-07-12):**
+**Result on 286 real held-out games:**
 
-| Predictor | Accuracy | Log loss | Brier score |
-|---|---|---|---|
-| Model (logistic regression) | 49.0% | 0.6958 | 0.2513 |
-| Always predict home team (training home-win rate) | 47.9% | 0.6977 | 0.2523 |
-| Coin flip | 47.9% | 0.6931 | 0.2500 |
+| Predictor | Accuracy | AUC | Log loss | Brier score |
+|---|---|---|---|---|
+| Model (logistic regression) | 49.0% | 0.560 | 0.6957 | 0.2513 |
+| Always predict home team (training home-win rate) | 47.9% | 0.500 | 0.6976 | 0.2522 |
+| Coin flip | 47.9% | 0.500 | 0.6931 | 0.2500 |
 
-Bootstrap 90% CI on accuracy: [44.1%, 53.5%] — straddles a coin flip. CI on
-log-loss improvement over the home-rate baseline: [-0.0040, +0.0075] —
-includes zero. **No statistically distinguishable edge over naive
-baselines.** Likely reason: single-game MLB outcomes are driven heavily by
-the **starting pitcher matchup**, which team-level rolling stats can't see
-at all — unlike NBA, where a five-man rotation dilutes any one player's
-effect. Starting-pitcher stats (ERA, FIP) are the obvious next feature,
-available from the same free API — not added here, to avoid tuning the
-model against the one held-out sample used to report it.
+Bootstrap 90% CI on accuracy: [44.1%, 53.8%] — straddles a coin flip. CI on
+log-loss improvement over the home-rate baseline: [-0.0038, +0.0075] —
+includes zero. **No statistically distinguishable edge over naive baselines
+on accuracy or log loss.** The one nuance: AUC (0.560 vs. 0.500) shows the
+model isn't *pure* noise — it has some real, weak ability to rank games by
+who's more likely to win — it just isn't strong enough to survive becoming
+a threshold decision or a calibrated probability. That distinction (ranking
+power vs. decision-useful probability) is worth being able to explain on
+its own; a lot of "my model doesn't work" post-mortems stop at accuracy and
+miss it. Likely reason for the ceiling: single-game MLB outcomes are driven
+heavily by the **starting pitcher matchup**, which team-level rolling stats
+can't see at all — unlike NBA, where a five-man rotation dilutes any one
+player's effect. Starting-pitcher stats (ERA, FIP) are the obvious next
+feature, available from the same free API — not added here, to avoid tuning
+the model against the one held-out sample used to report it.
 
 Full report: `results/mlb_model_report.md` (isotonic calibration is
 visibly noisier than Platt here too, on an independent 172-game calibration
@@ -174,16 +181,24 @@ for CLV over ROI, visually.
 **Model vs. naive baselines**, same held-out period — the real bar isn't
 50%, it's the market's own no-vig price:
 
-| Predictor | Accuracy | Log loss | Brier score |
-|---|---|---|---|
-| Model (logistic regression) | 59.2% | 0.6614 | 0.2345 |
-| Always bet market favorite (no-vig price) | 62.9% | 0.6637 | 0.2328 |
-| Always bet home team | 49.2% | 0.6994 | 0.2531 |
-| Coin flip | 44.2% | 0.6931 | 0.2500 |
+| Predictor | Accuracy | AUC | Log loss | Brier score |
+|---|---|---|---|---|
+| Model (logistic regression) | 59.2% | 0.637 | 0.6614 | 0.2345 |
+| Always bet market favorite (no-vig price) | 62.9% | 0.672 | 0.6637 | 0.2328 |
+| Always bet home team | 49.2% | 0.490 | 0.6994 | 0.2531 |
+| Coin flip | 44.2% | 0.500 | 0.6931 | 0.2500 |
 
-Edges the market on log loss, loses on accuracy and Brier — a wash, not a
-rout, which is the expected honest result: a six-feature model dominating
-the market's own price would be the red flag.
+The market wins on accuracy, AUC, and Brier; the model edges it slightly on
+raw log loss. Bootstrap 90% CI on that log-loss gap: +0.0024, 90% CI
+[-0.0301, +0.0335] — **includes zero**. So even the one metric the model
+nominally wins on isn't statistically distinguishable from parity with the
+market on this sample. That's the honest reading, not "a wash, not a rout"
+— the model doesn't demonstrably beat the market's own price on point
+predictions at all. It only shows up in CLV (above), which is a different,
+lower-variance question: not "was the model more accurate," but "did the
+line move in the model's favor after betting." A six-feature model
+dominating the market's own price on accuracy would be the red flag; not
+beating it here is the expected result.
 
 **Calibration.** The flagged bets skew toward underdogs (mean model
 probability 0.44 vs. mean market 0.33) — a plausible sign of "finding
@@ -220,6 +235,14 @@ bet** — one lucky longshot, not an edge. Full report:
   Platt +33%/136% case above), not as a box to tick.
 - **Calibration tested, not assumed** — isotonic and Platt both fit and
   compared against the raw model, neither cherry-picked when it didn't win.
+- **Every "the model beats X" claim carries a significance test, not just a
+  point estimate.** The NBA model's raw log-loss edge over the market
+  favorite looked real (0.6614 vs. 0.6637) until a bootstrap CI on the gap
+  turned out to include zero — a point estimate alone would have overstated
+  it. AUC is reported alongside accuracy/log-loss/Brier for the same
+  reason: a model can have real ranking signal (MLB: AUC 0.560) without it
+  surviving as a usable accuracy or calibration edge, and reporting only
+  accuracy would have hidden that distinction entirely.
 - **Point-in-time feature engineering, tested directly.** `test_mlb_features.py`
   literally changes a later game's score and asserts every earlier row is
   unchanged — "we tested it" beats "we wrote it carefully."
@@ -253,7 +276,7 @@ cp .env.example .env   # add ODDS_API_KEY to pull live odds (optional)
 pytest
 ```
 
-102 tests across `probability`, `vig`, `arbitrage`, `kelly`, `clv`, `model`,
+108 tests across `probability`, `vig`, `arbitrage`, `kelly`, `clv`, `model`,
 `backtest`, `odds_client`, `utils`, `baselines`, `calibration`, `stats`,
 `mlb_stats_client`, and `mlb_features` — including hand-checked example
 values for every formula in the spec, a planted arbitrage the scanner must

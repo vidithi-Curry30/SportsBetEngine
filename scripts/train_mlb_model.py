@@ -26,14 +26,14 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from sklearn.metrics import accuracy_score, brier_score_loss, log_loss
+from sklearn.metrics import accuracy_score, brier_score_loss, log_loss, roc_auc_score
 
 import config
 from src.calibration import IsotonicCalibrator, PlattCalibrator, reliability_curve
 from src.mlb_features import MLB_FEATURE_COLUMNS, MLB_TARGET_COLUMN, build_features
 from src.mlb_stats_client import fetch_completed_games
 from src.model import chronological_split, chronological_split_train_calib_test, train_model
-from src.stats import bootstrap_ci
+from src.stats import bootstrap_ci, per_game_log_loss
 
 
 def main():
@@ -91,6 +91,7 @@ def _score_baselines(y_true, model_probs, home_win_rate: float) -> pd.DataFrame:
             {
                 "predictor": name,
                 "accuracy": accuracy_score(y_true, preds),
+                "auc": roc_auc_score(y_true, probs),
                 "log_loss": log_loss(y_true, probs, labels=[0, 1]),
                 "brier_score": brier_score_loss(y_true, probs),
             }
@@ -98,18 +99,13 @@ def _score_baselines(y_true, model_probs, home_win_rate: float) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _per_game_log_loss(y_true, probs):
-    probs_clipped = np.clip(probs, 1e-15, 1 - 1e-15)
-    return -(y_true * np.log(probs_clipped) + (1 - y_true) * np.log(1 - probs_clipped))
-
-
 def _run_bootstrap_ci(y_true, model_probs, home_win_rate: float):
     preds = (model_probs >= 0.5).astype(int)
     correct = (preds == y_true).astype(float)
     accuracy_ci = bootstrap_ci(correct, statistic=np.mean, ci=0.90)
 
-    model_loss = _per_game_log_loss(y_true, model_probs)
-    baseline_loss = _per_game_log_loss(y_true, np.full(len(y_true), home_win_rate))
+    model_loss = per_game_log_loss(y_true, model_probs)
+    baseline_loss = per_game_log_loss(y_true, np.full(len(y_true), home_win_rate))
     log_loss_delta = baseline_loss - model_loss  # positive means model beats the baseline
     log_loss_delta_ci = bootstrap_ci(log_loss_delta, statistic=np.mean, ci=0.90)
 
@@ -185,10 +181,10 @@ def _write_report(games_df, train_df, test_df, baseline_table, accuracy_ci, log_
 
 
 def _baseline_table_markdown(baseline_table: pd.DataFrame) -> str:
-    lines = ["| Predictor | Accuracy | Log loss | Brier score |", "|---|---|---|---|"]
+    lines = ["| Predictor | Accuracy | AUC | Log loss | Brier score |", "|---|---|---|---|---|"]
     for _, row in baseline_table.iterrows():
         lines.append(
-            f"| {row['predictor']} | {row['accuracy']:.3f} | "
+            f"| {row['predictor']} | {row['accuracy']:.3f} | {row['auc']:.3f} | "
             f"{row['log_loss']:.4f} | {row['brier_score']:.4f} |"
         )
     return "\n".join(lines)
