@@ -1,7 +1,28 @@
 import numpy as np
 import pytest
+from sklearn.metrics import log_loss
 
-from src.stats import bootstrap_ci
+from src.stats import bootstrap_ci, per_game_log_loss
+
+
+class TestPerGameLogLoss:
+    def test_matches_sklearn_log_loss_when_averaged(self):
+        y_true = [1, 0, 1, 1, 0]
+        y_prob = [0.8, 0.3, 0.6, 0.9, 0.1]
+        per_game = per_game_log_loss(y_true, y_prob)
+        assert per_game.mean() == pytest.approx(log_loss(y_true, y_prob, labels=[0, 1]))
+
+    def test_confident_correct_prediction_has_low_loss(self):
+        loss = per_game_log_loss([1], [0.99])
+        assert loss[0] < 0.02
+
+    def test_confident_wrong_prediction_has_high_loss(self):
+        loss = per_game_log_loss([1], [0.01])
+        assert loss[0] > 4.0
+
+    def test_clips_extreme_probabilities_to_avoid_inf(self):
+        loss = per_game_log_loss([1, 0], [1.0, 0.0])
+        assert np.isfinite(loss).all()
 
 
 class TestBootstrapCi:

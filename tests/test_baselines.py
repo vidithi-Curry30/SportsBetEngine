@@ -69,11 +69,26 @@ class TestCompareToBaselines:
             "Always bet home team",
             "Coin flip",
         }
-        assert {"accuracy", "log_loss", "brier_score"}.issubset(result.columns)
+        assert {"accuracy", "auc", "log_loss", "brier_score"}.issubset(result.columns)
         assert (result["accuracy"] >= 0).all() and (result["accuracy"] <= 1).all()
+        assert (result["auc"] >= 0).all() and (result["auc"] <= 1).all()
 
     def test_coin_flip_brier_score_is_a_quarter(self):
         df = make_games_df()
         result = compare_to_baselines(df, model_probs=[0.5, 0.5, 0.5, 0.5], home_win_rate=0.5)
         coin_flip_row = result[result["predictor"] == "Coin flip"].iloc[0]
         assert coin_flip_row["brier_score"] == pytest.approx(0.25)
+
+    def test_coin_flip_auc_is_one_half(self):
+        # A constant prediction has no ranking power -> AUC of exactly 0.5
+        df = make_games_df()
+        result = compare_to_baselines(df, model_probs=[0.5, 0.5, 0.5, 0.5], home_win_rate=0.5)
+        coin_flip_row = result[result["predictor"] == "Coin flip"].iloc[0]
+        assert coin_flip_row["auc"] == pytest.approx(0.5)
+
+    def test_perfect_ranking_gives_auc_of_one(self):
+        df = make_games_df()
+        # Model probs perfectly rank-order with team_a_win = [1, 0, 1, 1]
+        result = compare_to_baselines(df, model_probs=[0.9, 0.1, 0.8, 0.7], home_win_rate=0.5)
+        model_row = result[result["predictor"] == "Model (logistic regression)"].iloc[0]
+        assert model_row["auc"] == pytest.approx(1.0)

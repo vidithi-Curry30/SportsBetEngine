@@ -23,12 +23,14 @@ Held-out test period: 2025-03-09 to 2025-04-12 (240 games)
 
 ## Model vs. naive baselines (same held-out period)
 
-| Predictor | Accuracy | Log loss | Brier score |
-|---|---|---|---|
-| Model (logistic regression) | 0.592 | 0.6614 | 0.2345 |
-| Always bet market favorite (no-vig price) | 0.629 | 0.6637 | 0.2328 |
-| Always bet home team | 0.492 | 0.6994 | 0.2531 |
-| Coin flip | 0.442 | 0.6931 | 0.2500 |
+| Predictor | Accuracy | AUC | Log loss | Brier score |
+|---|---|---|---|---|
+| Model (logistic regression) | 0.592 | 0.637 | 0.6614 | 0.2345 |
+| Always bet market favorite (no-vig price) | 0.629 | 0.672 | 0.6637 | 0.2328 |
+| Always bet home team | 0.492 | 0.490 | 0.6994 | 0.2531 |
+| Coin flip | 0.442 | 0.500 | 0.6931 | 0.2500 |
+
+**Is the model-vs-market gap real?** Bootstrap 90% CI on the per-game log-loss improvement over the market-favorite baseline: +0.0024, 90% CI [-0.0301, +0.0335] -- **includes zero**: not statistically distinguishable from no edge over the market's own price on this sample size.
 
 ## Calibration: does the model's raw probability mean what it says?
 
