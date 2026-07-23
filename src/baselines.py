@@ -7,7 +7,7 @@ weak-form market efficiency.
 """
 import numpy as np
 import pandas as pd
-from sklearn.metrics import accuracy_score, brier_score_loss, log_loss
+from sklearn.metrics import accuracy_score, brier_score_loss, log_loss, roc_auc_score
 
 from src.probability import american_to_probability, remove_vig
 
@@ -53,6 +53,7 @@ def compare_to_baselines(
             {
                 "predictor": name,
                 "accuracy": accuracy_score(y_true, preds),
+                "auc": roc_auc_score(y_true, probs),
                 "log_loss": log_loss(y_true, probs, labels=[0, 1]),
                 "brier_score": brier_score_loss(y_true, probs),
             }

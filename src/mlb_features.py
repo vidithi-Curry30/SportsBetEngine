@@ -50,6 +50,7 @@ def build_features(games: list[dict]) -> pd.DataFrame:
             rows.append(
                 {
                     "date": date,
+                    "game_pk": game.get("game_pk"),
                     "home_team": home,
                     "away_team": away,
                     "home_win": game["home_win"],

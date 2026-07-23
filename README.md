@@ -8,18 +8,27 @@ research/backtesting pipeline — data ingestion, a probability model, a
 backtest, and risk-managed sizing — built as a quant-trading portfolio piece,
 not a betting product.
 
+*Built with Claude Code as a development tool: I directed scope and data
+decisions, reviewed and approved each phase, and made the calls at every
+decision point; Claude implemented most of the code. I can walk through and
+defend every module.*
+
 ## TL;DR
 
 - **The pipeline is real end-to-end**, not a toy: a live Odds API key, a real
   arbitrage scan against actual multi-book prices, and a real predictive
-  model trained on 1,444 real MLB games — not just a notebook that runs once
-  on a CSV someone else cleaned.
+  model trained on 1,400+ real MLB games — not just a notebook that runs
+  once on a CSV someone else cleaned.
 - **The real model doesn't beat a coin flip on held-out data (49.0% vs.
-  47.9%), and that's reported as the finding, not tuned away** — the README
-  says why (team-level stats can't see the starting-pitcher effect that
-  dominates single-game MLB outcomes) instead of quietly swapping in a
-  friendlier number. This is the single best "how do you know you're not
-  fooling yourself" answer in the project.
+  47.9%), reported as the finding, not tuned away** — with a specific,
+  testable hypothesis for why (team-level stats can't see the
+  starting-pitcher effect). That hypothesis was then actually tested by
+  adding real pitcher features on a fresh, never-before-seen data pull: a
+  small, consistent, positive lift across every metric, still not
+  statistically significant on 261 games — exactly the calibrated
+  expectation stated *before* running the experiment, not after. Predicting
+  the size of an effect and then confirming it is a stronger signal than
+  either the null result or the improvement alone.
 - **A tail-risk check the backtest runs automatically caught its own fake
   result**: a calibration variant posted a flashy +33% ROI until
   `top_bet_pnl_share` showed 136% of that profit came from one lucky
@@ -63,8 +72,9 @@ fully priced in the same information (i.e., before the closing line).
 | `src/baselines.py` | Naive predictors (trust the market, always home, coin flip) the model has to actually beat |
 | `src/calibration.py` | Reliability diagrams and isotonic/Platt recalibration — is the model's raw probability trustworthy enough to size bets with? |
 | `src/stats.py` | Bootstrap confidence intervals for backtest metrics on a small sample |
-| `src/mlb_stats_client.py` | Wraps the free, public MLB Stats API (`statsapi.mlb.com`) for real completed-game results |
-| `src/mlb_features.py` | Point-in-time (no-lookahead) feature engineering on real MLB games — see "Real MLB model" below |
+| `src/mlb_stats_client.py` | Wraps the free, public MLB Stats API (`statsapi.mlb.com`) for real completed-game results and starting-pitcher game logs |
+| `src/mlb_features.py` | Point-in-time (no-lookahead) team-level feature engineering on real MLB games — see "Real MLB model" below |
+| `src/mlb_pitcher_features.py` | Point-in-time rolling ERA/K9 for starting pitchers, additive to the team features |
 
 Three commands run it end-to-end:
 
@@ -117,7 +127,8 @@ doesn't belong in a public repo even on the free tier. Pull your own with
 ## Real MLB model: an honest null result
 
 `scripts/train_mlb_model.py` fetches every completed 2026 game from
-`statsapi.mlb.com` (1,444 games) and trains a logistic regression on
+`statsapi.mlb.com` (1,445 games as of this run — it's a live pull, so the
+count grows daily) and trains a logistic regression on
 point-in-time features — rolling runs scored/allowed, season run
 differential, last-10 win rate, and rest days, all home-minus-away diffs
 computed only from games strictly before the one predicted
@@ -125,27 +136,61 @@ computed only from games strictly before the one predicted
 an earlier row). Home team is fixed by the real data, so home advantage is
 absorbed into the model's intercept rather than a separate feature.
 
-**Result on 286 real held-out games (2026-06-22 to 2026-07-12):**
+**Result on 286 real held-out games:**
 
-| Predictor | Accuracy | Log loss | Brier score |
-|---|---|---|---|
-| Model (logistic regression) | 49.0% | 0.6958 | 0.2513 |
-| Always predict home team (training home-win rate) | 47.9% | 0.6977 | 0.2523 |
-| Coin flip | 47.9% | 0.6931 | 0.2500 |
+| Predictor | Accuracy | AUC | Log loss | Brier score |
+|---|---|---|---|---|
+| Model (logistic regression) | 49.0% | 0.560 | 0.6957 | 0.2513 |
+| Always predict home team (training home-win rate) | 47.9% | 0.500 | 0.6976 | 0.2522 |
+| Coin flip | 47.9% | 0.500 | 0.6931 | 0.2500 |
 
-Bootstrap 90% CI on accuracy: [44.1%, 53.5%] — straddles a coin flip. CI on
-log-loss improvement over the home-rate baseline: [-0.0040, +0.0075] —
-includes zero. **No statistically distinguishable edge over naive
-baselines.** Likely reason: single-game MLB outcomes are driven heavily by
-the **starting pitcher matchup**, which team-level rolling stats can't see
-at all — unlike NBA, where a five-man rotation dilutes any one player's
-effect. Starting-pitcher stats (ERA, FIP) are the obvious next feature,
-available from the same free API — not added here, to avoid tuning the
-model against the one held-out sample used to report it.
+Bootstrap 90% CI on accuracy: [44.1%, 53.8%] — straddles a coin flip. CI on
+log-loss improvement over the home-rate baseline: [-0.0038, +0.0075] —
+includes zero. **No statistically distinguishable edge over naive baselines
+on accuracy or log loss.** The one nuance: AUC (0.560 vs. 0.500) shows the
+model isn't *pure* noise — it has some real, weak ability to rank games by
+who's more likely to win — it just isn't strong enough to survive becoming
+a threshold decision or a calibrated probability. That distinction (ranking
+power vs. decision-useful probability) is worth being able to explain on
+its own; a lot of "my model doesn't work" post-mortems stop at accuracy and
+miss it. Likely reason for the ceiling: single-game MLB outcomes are driven
+heavily by the **starting pitcher matchup**, which team-level rolling stats
+can't see at all — unlike NBA, where a five-man rotation dilutes any one
+player's effect. Starting-pitcher stats (ERA, FIP) are the obvious next
+feature, available from the same free API — not added here, to avoid tuning
+the model against the one held-out sample used to report it.
 
 Full report: `results/mlb_model_report.md` (isotonic calibration is
 visibly noisier than Platt here too, on an independent 172-game calibration
 set — same small-sample pattern as the synthetic case, now seen twice).
+
+### Does adding starting-pitcher features help?
+
+Tested it (`scripts/train_mlb_model_with_pitching.py`, `src/mlb_pitcher_features.py`):
+rolling ERA and K/9 (strikeouts per 9 innings — a "stuff" metric that per
+DIPS theory is less noisy over a small sample than ERA, which is heavily
+luck/defense-influenced) for both starting pitchers, point-in-time correct
+the same way as the team features. Both models below are trained and
+evaluated on the *identical* set of games, so the comparison isolates the
+effect of the new features — and this uses a **fresh data pull**, not the
+286 games already reported on above, so the "did it help" question isn't
+answered against a test set that's already been looked at.
+
+| Predictor | Accuracy | AUC | Log loss | Brier score |
+|---|---|---|---|---|
+| Team-only | 52.9% | 0.569 | 0.6886 | 0.2477 |
+| Team + starting pitcher | 53.3% | 0.574 | 0.6876 | 0.2472 |
+
+Small, consistent, positive lift across every metric — and a bootstrap 90%
+CI on the log-loss improvement of [-0.0021, +0.0041] still includes zero.
+Not statistically significant on 261 held-out games. This is exactly what
+was predicted *before* running it: pitcher features should help some
+(baseball's low events-per-game count means even a real signal is hard to
+detect over one test period), but MLB has a structurally lower single-game
+predictability ceiling than NBA regardless of feature set, so a small,
+inconclusive-on-this-sample lift — not a transformation — is the correctly
+calibrated expectation, and that's what showed up. Full report:
+`results/mlb_pitcher_features_report.md`.
 
 ## Results: synthetic NBA backtest
 
@@ -169,16 +214,24 @@ for CLV over ROI, visually.
 **Model vs. naive baselines**, same held-out period — the real bar isn't
 50%, it's the market's own no-vig price:
 
-| Predictor | Accuracy | Log loss | Brier score |
-|---|---|---|---|
-| Model (logistic regression) | 59.2% | 0.6614 | 0.2345 |
-| Always bet market favorite (no-vig price) | 62.9% | 0.6637 | 0.2328 |
-| Always bet home team | 49.2% | 0.6994 | 0.2531 |
-| Coin flip | 44.2% | 0.6931 | 0.2500 |
+| Predictor | Accuracy | AUC | Log loss | Brier score |
+|---|---|---|---|---|
+| Model (logistic regression) | 59.2% | 0.637 | 0.6614 | 0.2345 |
+| Always bet market favorite (no-vig price) | 62.9% | 0.672 | 0.6637 | 0.2328 |
+| Always bet home team | 49.2% | 0.490 | 0.6994 | 0.2531 |
+| Coin flip | 44.2% | 0.500 | 0.6931 | 0.2500 |
 
-Edges the market on log loss, loses on accuracy and Brier — a wash, not a
-rout, which is the expected honest result: a six-feature model dominating
-the market's own price would be the red flag.
+The market wins on accuracy, AUC, and Brier; the model edges it slightly on
+raw log loss. Bootstrap 90% CI on that log-loss gap: +0.0024, 90% CI
+[-0.0301, +0.0335] — **includes zero**. So even the one metric the model
+nominally wins on isn't statistically distinguishable from parity with the
+market on this sample. That's the honest reading, not "a wash, not a rout"
+— the model doesn't demonstrably beat the market's own price on point
+predictions at all. It only shows up in CLV (above), which is a different,
+lower-variance question: not "was the model more accurate," but "did the
+line move in the model's favor after betting." A six-feature model
+dominating the market's own price on accuracy would be the red flag; not
+beating it here is the expected result.
 
 **Calibration.** The flagged bets skew toward underdogs (mean model
 probability 0.44 vs. mean market 0.33) — a plausible sign of "finding
@@ -215,6 +268,14 @@ bet** — one lucky longshot, not an edge. Full report:
   Platt +33%/136% case above), not as a box to tick.
 - **Calibration tested, not assumed** — isotonic and Platt both fit and
   compared against the raw model, neither cherry-picked when it didn't win.
+- **Every "the model beats X" claim carries a significance test, not just a
+  point estimate.** The NBA model's raw log-loss edge over the market
+  favorite looked real (0.6614 vs. 0.6637) until a bootstrap CI on the gap
+  turned out to include zero — a point estimate alone would have overstated
+  it. AUC is reported alongside accuracy/log-loss/Brier for the same
+  reason: a model can have real ranking signal (MLB: AUC 0.560) without it
+  surviving as a usable accuracy or calibration edge, and reporting only
+  accuracy would have hidden that distinction entirely.
 - **Point-in-time feature engineering, tested directly.** `test_mlb_features.py`
   literally changes a later game's score and asserts every earlier row is
   unchanged — "we tested it" beats "we wrote it carefully."
@@ -248,14 +309,14 @@ cp .env.example .env   # add ODDS_API_KEY to pull live odds (optional)
 pytest
 ```
 
-102 tests across `probability`, `vig`, `arbitrage`, `kelly`, `clv`, `model`,
+123 tests across `probability`, `vig`, `arbitrage`, `kelly`, `clv`, `model`,
 `backtest`, `odds_client`, `utils`, `baselines`, `calibration`, `stats`,
-`mlb_stats_client`, and `mlb_features` — including hand-checked example
-values for every formula in the spec, a planted arbitrage the scanner must
-detect, a chronological split the model must never leak across, a
-tail-dominated P&L case the backtest's concentration check must flag, and a
-point-in-time correctness check that a later real game can never change an
-earlier one's features.
+`mlb_stats_client`, `mlb_features`, and `mlb_pitcher_features` — including
+hand-checked example values for every formula in the spec, a planted
+arbitrage the scanner must detect, a chronological split the model must
+never leak across, a tail-dominated P&L case the backtest's concentration
+check must flag, and a point-in-time correctness check (for both team and
+pitcher features) that a later real game can never change an earlier one's.
 
 ## Repo structure
 
@@ -264,20 +325,22 @@ sports-market-efficiency/
 ├── config.py                  # env vars, paths, API defaults
 ├── src/                       # probability, vig, arbitrage, model, kelly, clv, backtest,
 │                              #   odds_client, utils, baselines, calibration, stats,
-│                              #   mlb_stats_client, mlb_features
+│                              #   mlb_stats_client, mlb_features, mlb_pitcher_features
 ├── scripts/
-│   ├── fetch_odds.py          # pull live odds -> data/raw/
-│   ├── run_backtest.py        # synthetic NBA: train + backtest -> results/
-│   └── train_mlb_model.py     # real MLB: fetch + train + evaluate -> results/
+│   ├── fetch_odds.py                      # pull live odds -> data/raw/
+│   ├── run_backtest.py                    # synthetic NBA: train + backtest -> results/
+│   ├── train_mlb_model.py                 # real MLB: fetch + train + evaluate -> results/
+│   └── train_mlb_model_with_pitching.py   # does adding pitcher features help? -> results/
 ├── data/
 │   ├── raw/                   # unmodified API pulls (gitignored, except the synthetic sample)
 │   └── processed/             # nba_games_synthetic.csv, mlb_games_real.csv
 ├── notebooks/exploration.ipynb
 ├── tests/
 └── results/
-    ├── backtest_report.md          # synthetic NBA backtest
+    ├── backtest_report.md               # synthetic NBA backtest
     ├── clv_plot.png
     ├── calibration_plot.png
-    ├── mlb_model_report.md         # real MLB model evaluation
-    └── mlb_reliability_plot.png
+    ├── mlb_model_report.md              # real MLB model evaluation
+    ├── mlb_reliability_plot.png
+    └── mlb_pitcher_features_report.md   # team-only vs. team+pitcher comparison
 ```

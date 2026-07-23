@@ -29,7 +29,7 @@ from sklearn.metrics import brier_score_loss
 
 import config
 from src.backtest import run_backtest
-from src.baselines import compare_to_baselines
+from src.baselines import compare_to_baselines, predict_market_favorite
 from src.calibration import IsotonicCalibrator, PlattCalibrator, reliability_curve
 from src.model import (
     FEATURE_COLUMNS,
@@ -38,7 +38,7 @@ from src.model import (
     predict_win_probability,
     train_model,
 )
-from src.stats import bootstrap_ci
+from src.stats import bootstrap_ci, per_game_log_loss
 
 
 def main():
@@ -55,13 +55,15 @@ def main():
     result = run_backtest(test_df, model)
 
     home_win_rate = float(train_df.loc[train_df["home_flag"] == 1, "team_a_win"].mean())
-    baseline_table = _run_baseline_comparison(model, test_df, home_win_rate)
+    model_probs = np.array([predict_win_probability(model, row) for _, row in test_df.iterrows()])
+    baseline_table = compare_to_baselines(test_df, model_probs, home_win_rate)
+    significance_ci = _run_baseline_significance(test_df, model_probs)
     roi_ci, clv_ci = _run_bootstrap_ci(result)
     calibration = _run_calibration_analysis(games_df, args.train_frac)
 
     config.RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     _write_report(
-        result, train_df, test_df, baseline_table, roi_ci, clv_ci, calibration,
+        result, train_df, test_df, baseline_table, significance_ci, roi_ci, clv_ci, calibration,
         config.RESULTS_DIR / "backtest_report.md",
     )
     _write_clv_plot(result, config.RESULTS_DIR / "clv_plot.png")
@@ -69,12 +71,21 @@ def main():
 
     print(f"ROI: {result['roi']:.2%}  Avg CLV: {result['avg_clv']:+.2f}pp  Hit rate: {result['hit_rate']:.1%}")
     print(f"Bootstrap 90% CI -- avg CLV: [{clv_ci[1]:+.2f}, {clv_ci[2]:+.2f}]pp")
+    print(f"Model vs. market-favorite log-loss delta 90% CI: [{significance_ci[1]:+.4f}, {significance_ci[2]:+.4f}]")
     print(f"Report written to {config.RESULTS_DIR / 'backtest_report.md'}")
 
 
-def _run_baseline_comparison(model, test_df: pd.DataFrame, home_win_rate: float) -> pd.DataFrame:
-    model_probs = np.array([predict_win_probability(model, row) for _, row in test_df.iterrows()])
-    return compare_to_baselines(test_df, model_probs, home_win_rate)
+def _run_baseline_significance(test_df: pd.DataFrame, model_probs: np.ndarray):
+    """Bootstrap CI on the per-game log-loss gap between the model and the strongest
+    baseline (the market's own no-vig price). If this CI doesn't clear zero, the
+    model hasn't shown a significant edge over just trusting the market's price."""
+    y_true = test_df["team_a_win"].to_numpy()
+    market_probs = predict_market_favorite(test_df)
+
+    model_loss = per_game_log_loss(y_true, model_probs)
+    market_loss = per_game_log_loss(y_true, market_probs)
+    delta = market_loss - model_loss  # positive means the model beats the market favorite
+    return bootstrap_ci(delta, statistic=np.mean, ci=0.90)
 
 
 def _run_bootstrap_ci(result: dict):
@@ -123,6 +134,7 @@ def _write_report(
     train_df: pd.DataFrame,
     test_df: pd.DataFrame,
     baseline_table: pd.DataFrame,
+    significance_ci: tuple,
     roi_ci: tuple,
     clv_ci: tuple,
     calibration: dict,
@@ -160,6 +172,19 @@ def _write_report(
         "",
         _baseline_table_markdown(baseline_table),
         "",
+        f"**Is the model-vs-market gap real?** Bootstrap 90% CI on the per-game "
+        f"log-loss improvement over the market-favorite baseline: "
+        f"{significance_ci[0]:+.4f}, 90% CI [{significance_ci[1]:+.4f}, "
+        f"{significance_ci[2]:+.4f}]"
+        + (
+            " -- **excludes zero**: the model's log-loss edge over the market's own "
+            "price is statistically distinguishable from noise on this sample, even "
+            "though it isn't ahead on accuracy or Brier score above."
+            if significance_ci[1] > 0
+            else " -- **includes zero**: not statistically distinguishable from no "
+            "edge over the market's own price on this sample size."
+        ),
+        "",
         "## Calibration: does the model's raw probability mean what it says?",
         "",
         f"Calibration set: {calibration['calib_set_size']} games (carved out of the "
@@ -188,10 +213,10 @@ def _format_pnl_share(share) -> str:
 
 
 def _baseline_table_markdown(baseline_table: pd.DataFrame) -> str:
-    lines = ["| Predictor | Accuracy | Log loss | Brier score |", "|---|---|---|---|"]
+    lines = ["| Predictor | Accuracy | AUC | Log loss | Brier score |", "|---|---|---|---|---|"]
     for _, row in baseline_table.iterrows():
         lines.append(
-            f"| {row['predictor']} | {row['accuracy']:.3f} | "
+            f"| {row['predictor']} | {row['accuracy']:.3f} | {row['auc']:.3f} | "
             f"{row['log_loss']:.4f} | {row['brier_score']:.4f} |"
         )
     return "\n".join(lines)

@@ -3,6 +3,14 @@ import numpy as np
 from typing import Callable, Sequence
 
 
+def per_game_log_loss(y_true, y_prob) -> np.ndarray:
+    """Per-observation log loss (not averaged), for feeding into bootstrap_ci
+    to test whether a log-loss gap between two predictors is significant."""
+    y_true_arr = np.asarray(y_true, dtype=float)
+    y_prob_arr = np.clip(np.asarray(y_prob, dtype=float), 1e-15, 1 - 1e-15)
+    return -(y_true_arr * np.log(y_prob_arr) + (1 - y_true_arr) * np.log(1 - y_prob_arr))
+
+
 def bootstrap_ci(
     values: Sequence[float],
     statistic: Callable[[np.ndarray], float] = np.mean,
