@@ -8,6 +8,7 @@ from src.model import (
     has_value_edge,
     predict_win_probability,
     train_model,
+    walk_forward_splits,
 )
 
 
@@ -87,6 +88,69 @@ class TestTrainModel:
 
         prob = predict_win_probability(model, test_df.iloc[0])
         assert 0.0 <= prob <= 1.0
+
+
+class TestWalkForwardSplits:
+    def test_correct_number_of_folds(self):
+        df = make_games_df(100)
+        splits = walk_forward_splits(df, n_splits=4)
+        assert len(splits) == 4
+
+    def test_hand_verified_fold_boundaries(self):
+        # 10 rows, n_splits=4 -> chunk_size = 10 // 5 = 2:
+        # fold0: train[:2]  test[2:4]
+        # fold1: train[:4]  test[4:6]
+        # fold2: train[:6]  test[6:8]
+        # fold3: train[:8]  test[8:10]  (last fold absorbs any remainder)
+        df = make_games_df(10)
+        splits = walk_forward_splits(df, n_splits=4)
+
+        expected_train_sizes = [2, 4, 6, 8]
+        expected_test_sizes = [2, 2, 2, 2]
+        for (train_df, test_df), exp_train, exp_test in zip(splits, expected_train_sizes, expected_test_sizes):
+            assert len(train_df) == exp_train
+            assert len(test_df) == exp_test
+
+    def test_folds_expand_and_never_leak_future_into_train(self):
+        df = make_games_df(100)
+        splits = walk_forward_splits(df, n_splits=4)
+
+        for train_df, test_df in splits:
+            assert train_df["date"].max() <= test_df["date"].min()
+
+        # Training set must strictly grow fold over fold (expanding window).
+        train_sizes = [len(train_df) for train_df, _ in splits]
+        assert train_sizes == sorted(train_sizes)
+        assert len(set(train_sizes)) == len(train_sizes)  # strictly increasing, no ties
+
+    def test_test_folds_are_non_overlapping(self):
+        df = make_games_df(100)
+        splits = walk_forward_splits(df, n_splits=4)
+
+        seen_dates = set()
+        for _, test_df in splits:
+            fold_dates = set(test_df["date"])
+            assert not (fold_dates & seen_dates)
+            seen_dates |= fold_dates
+
+    def test_last_fold_absorbs_remainder_rows(self):
+        # 11 rows doesn't divide evenly into 5 chunks (chunk_size=2, 1 leftover)
+        # -- the leftover must land in the last fold's test set, not be dropped.
+        df = make_games_df(11)
+        splits = walk_forward_splits(df, n_splits=4)
+
+        total_rows_covered = len(splits[0][0]) + sum(len(test_df) for _, test_df in splits)
+        assert total_rows_covered == 11
+
+    def test_invalid_n_splits_raises(self):
+        df = make_games_df(10)
+        with pytest.raises(ValueError):
+            walk_forward_splits(df, n_splits=0)
+
+    def test_too_few_rows_raises(self):
+        df = make_games_df(3)
+        with pytest.raises(ValueError):
+            walk_forward_splits(df, n_splits=4)
 
 
 class TestHasValueEdge:

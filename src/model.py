@@ -50,6 +50,40 @@ def chronological_split_train_calib_test(
     return fit_train_df, calib_df, test_df
 
 
+def walk_forward_splits(
+    games_df: pd.DataFrame, n_splits: int = 4, date_column: str = "date"
+) -> list[tuple[pd.DataFrame, pd.DataFrame]]:
+    """Expanding-window (rolling-origin) walk-forward splits: unlike a single
+    80/20 chronological_split, this retrains repeatedly as time moves forward
+    and evaluates on multiple, non-overlapping future periods, which is what
+    shows whether an edge is stable over time or just an artifact of which
+    single test window got picked.
+
+    Divides the chronologically-sorted games into `n_splits + 1` equal-sized
+    chunks. Fold i trains on chunks[0..i] (everything up to that point) and
+    tests on chunk[i+1] (the next chunk only, never touched during training) --
+    so fold 0's test chunk becomes part of fold 1's training data, and so on.
+    Returns a list of (train_df, test_df) tuples, one per fold.
+    """
+    if n_splits < 1:
+        raise ValueError("n_splits must be at least 1")
+
+    sorted_df = games_df.sort_values(date_column).reset_index(drop=True)
+    n = len(sorted_df)
+    chunk_size = n // (n_splits + 1)
+    if chunk_size == 0:
+        raise ValueError(f"Not enough rows ({n}) for {n_splits} splits")
+
+    splits = []
+    for i in range(n_splits):
+        train_end = chunk_size * (i + 1)
+        test_end = chunk_size * (i + 2) if i < n_splits - 1 else n
+        train_df = sorted_df.iloc[:train_end].copy()
+        test_df = sorted_df.iloc[train_end:test_end].copy()
+        splits.append((train_df, test_df))
+    return splits
+
+
 def train_model(
     training_df: pd.DataFrame,
     feature_columns: list[str] = FEATURE_COLUMNS,

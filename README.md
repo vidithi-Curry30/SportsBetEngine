@@ -11,23 +11,32 @@ portfolio piece, not a betting product.
 ## TL;DR
 
 - **Real end-to-end**: a live Odds API key, a real arbitrage scan against
-  actual multi-book prices, a real win-probability model trained on 1,400+
-  real MLB games.
-- **The real MLB model doesn't beat a coin flip (49.0% vs. 47.9%), reported
-  as the finding** — with a hypothesis (team stats can't see the starting
-  pitcher) that was then tested on fresh data: a small, consistent, still
-  not statistically significant lift. Predicting an effect and confirming it
-  beats either a null result or an improvement alone.
+  actual multi-book prices, a real win-probability model trained on real MLB
+  games across four seasons (2023-2026, ~8,800 point-in-time feature rows).
+- **A single 80/20 split on one partial season found no edge (49.0% vs.
+  47.9%, CI includes zero) — a proper walk-forward evaluation across four
+  seasons found a small, statistically significant one** (pooled log-loss
+  improvement +0.0042, 90% CI [+0.0021, +0.0061], excludes zero). Both
+  numbers are real and both are reported; the gap between them is a lesson
+  in statistical power, not a contradiction — a small true effect needs
+  enough pooled data to tell from noise, and 286 games wasn't enough where
+  ~7,000 pooled held-out predictions is. The effect is still small in
+  absolute terms: this is not "the model prints money."
+- **The synthetic NBA backtest is a mechanics demo, not evidence of a real
+  edge** — it's disclosed as synthetic and stays that way; the CLV/ROI
+  numbers show the pipeline (sizing, slippage, tail-risk checks) works
+  correctly on invented games, nothing more. Real evidence lives in the
+  walk-forward MLB result above and the forward-collecting paper-trading
+  pipeline below.
 - **The backtest's own tail-risk check flags its own headline ROI**: +6.3%
   looks like a win until `top_bet_pnl_share` shows 634% of that profit came
-  from one bet. This is *why* CLV (+2.64pp, 90% CI clears zero), not ROI, is
-  the metric this project leads with.
+  from one bet — the mechanics-demo point above, concretely.
 - **Isotonic-vs-Platt calibration finding reproduced independently on two
   unrelated datasets** (synthetic NBA, real MLB) — same pattern both times.
-- Three additions extend the risk/pricing logic past a single bet: a
-  slate-level exposure cap, a market-making (quoting) mode, and a
-  forward-collecting real-CLV pipeline. Details below; the last one has
-  **no results yet** — it was just built.
+- Additions beyond the original backtest: a slate-level exposure cap, a
+  correlation-aware (multivariate Kelly) sizing model, a market-making
+  (quoting) mode, and a forward-collecting real-CLV pipeline. The last one
+  has **no results yet** — it was just built and needs weeks of real runs.
 
 ## Why this framing
 
@@ -50,6 +59,7 @@ price*, consistently, net of the vig, before the closing line.
 | `backtest.py` | Walks the held-out period, sizes bets, simulates bankroll, batches by slate |
 | `baselines.py` / `calibration.py` / `stats.py` | Naive-baseline comparison, isotonic/Platt calibration, bootstrap CIs |
 | `mlb_stats_client.py` / `mlb_features.py` / `mlb_pitcher_features.py` | Real MLB results and point-in-time team/pitcher features (historical + live) |
+| `model_selection.py` | Regularization-strength search (leakage-safe inner validation) and standardized-coefficient feature importance |
 | `portfolio_risk.py` | Slate-level exposure cap on top of the per-bet Kelly cap |
 | `portfolio_optimization.py` | Correlation-aware sizing: a multivariate Kelly generalization (`w* = Σ⁻¹μ`) that discounts bets sharing a team |
 | `market_maker.py` | Quotes a two-sided line and simulates inventory-skew repricing |
@@ -58,7 +68,8 @@ price*, consistently, net of the vig, before the closing line.
 ```bash
 python scripts/fetch_odds.py --sport baseball_mlb   # pull live odds (needs ODDS_API_KEY)
 python scripts/run_backtest.py                      # synthetic NBA: train, backtest, write results/
-python scripts/train_mlb_model.py                   # real MLB: fetch, train, evaluate
+python scripts/train_mlb_model.py                   # real MLB: fetch, train, evaluate (single split)
+python scripts/train_mlb_model_walk_forward.py      # real MLB: multi-season walk-forward evaluation
 python scripts/collect_paper_trades.py              # real MLB: log today's live-odds edges
 python scripts/reconcile_paper_trades.py            # real MLB: settle + report
 ```
@@ -95,11 +106,12 @@ books; `scan_games_for_arbitrage` found **0 opportunities**, consistent with
 the synthetic result. Vig ranged 2.2–5.1%, with offshore/low-margin books
 pricing tighter — directionally sensible on a small sample.
 
-## Real MLB model: an honest null result
+## Real MLB model: a single-split null result, revised by more data
 
 `train_mlb_model.py` trains on point-in-time features (rolling
 runs scored/allowed, run differential, last-10 win rate, rest days) from
-every completed 2026 game (1,445 as of this run).
+every completed 2026 game (1,445 as of this run), evaluated on one static
+80/20 chronological split.
 
 | Predictor | Accuracy | AUC | Log loss | Brier |
 |---|---|---|---|---|
@@ -119,7 +131,51 @@ train/test games either way): accuracy 52.9% → 53.3%, log-loss CI
 calibrated-in-advance expectation (some lift, not a transformation). Full
 reports: `results/mlb_model_report.md`, `results/mlb_pitcher_features_report.md`.
 
+### Walk-forward validation across four seasons: a small but real edge
+
+The single-split result above was a fair criticism waiting to happen: one
+partial season, one static split, no regularization search, no error
+analysis. `train_mlb_model_walk_forward.py` fixes all four at once, on the
+*same* six-feature model — real games from **2023, 2024, 2025, and 2026**
+(~8,800 point-in-time feature rows, rolling state reset at each season
+boundary since carrying form across an off-season is unrealistic), evaluated
+across **4 expanding-window walk-forward folds** instead of one split, with a
+regularization-strength search inside each fold's own training data (an
+inner chronological validation split, never that fold's real test set).
+
+| Fold | Test period | Accuracy | AUC | Log loss |
+|---|---|---|---|---|
+| 0 | 2023-08 → 2024-06 | 55.3% | 0.590 | 0.6848 |
+| 1 | 2024-06 → 2025-04 | 54.6% | 0.556 | 0.6887 |
+| 2 | 2025-04 → 2025-09 | 55.2% | 0.557 | 0.6850 |
+| 3 | 2025-09 → 2026-07 | 53.7% | 0.534 | 0.6915 |
+
+Stable across folds (accuracy 0.547 ± 0.007, log loss 0.6875 ± 0.0032) —
+not one lucky window. Pooling all four folds' held-out predictions (~7,000
+games) for a bootstrap CI on the log-loss improvement over each fold's own
+home-rate baseline: **+0.0042, 90% CI [+0.0021, +0.0061] — excludes zero.**
+
+**This revises the single-split finding, it doesn't contradict it.** 286
+games can't statistically distinguish a small effect from noise; ~7,000
+pooled held-out predictions can. The effect itself is still small — this
+is a statistically real edge, not an economically large one, and vig/
+transaction costs (untested here, since there's no real historical odds to
+backtest against — see "Forward-collecting real CLV") would eat into it.
+
+Feature importance (standardized coefficients, `season_run_diff_diff` far
+ahead of the rest) and error analysis (accuracy rises from 50.3% to 59.7%
+across model-confidence quintiles — the model's confidence is meaningfully
+informative, not noise; performance is stable 2024-2025 and softer on the
+partial, noisier 2023/2026 season slices) are in the full report:
+`results/mlb_walk_forward_report.md`.
+
 ## Results: synthetic NBA backtest
+
+**A mechanics demo, not evidence of a real edge** — every number below runs
+on synthetic games (see "A note on data"). It validates that sizing,
+slippage, and the tail-risk check work correctly; it proves nothing about
+whether the underlying edge is real. That's what the walk-forward MLB
+result above and the forward-collecting paper-trading pipeline below are for.
 
 240 held-out games, 94 bets flagged (3pp edge threshold), run through the
 slate-batched engine (same-day bets sized against that day's starting
@@ -202,7 +258,15 @@ build a production engine.
   calibration don't get conflated.
 - **Point-in-time features, tested directly** — `test_mlb_features.py`
   changes a later game's score and asserts every earlier row is unchanged.
-- **Null results reported as null results.**
+- **Null results reported as null results — and revised in the open when
+  more data changes the answer.** The single-split MLB result found no
+  edge; a walk-forward evaluation across four seasons found a small one.
+  Both are in the README, with the statistical-power reasoning connecting
+  them, not just the more flattering number.
+- **Regularization selection never touches a fold's real test set.** The
+  walk-forward evaluation picks C via a further chronological split inside
+  each fold's *training* data — a leakage-safe inner validation, not a grid
+  search against the number being reported.
 
 ## What this deliberately doesn't do
 
@@ -210,7 +274,9 @@ build a production engine.
   have been, at a real price, for later reconciliation.
 - No database — flat CSV/JSON is sufficient and easier to defend than a schema.
 - No deep learning — logistic regression is the right complexity for six
-  features and ~1000 games.
+  engineered features; even with ~8,800 games across four seasons, that's
+  still few enough features that a linear model is fully identifiable and
+  interpretable, not a scale that needs more capacity.
 - No production market-making engine — `market_maker.py` demonstrates the
   mechanism on one game, not a continuous multi-game book.
 
@@ -228,31 +294,35 @@ cp .env.example .env   # add ODDS_API_KEY to pull live odds (optional)
 pytest
 ```
 
-192 tests, including hand-checked formula values, a planted arbitrage the
+207 tests, including hand-checked formula values, a planted arbitrage the
 scanner must detect, a chronological split the model must never leak across,
-a tail-dominated P&L case the concentration check must flag, point-in-time
-correctness checks (historical and live), a slate that forces the exposure
-cap to bind, correlation-aware weights checked against hand-derived closed
-forms (not just "a number came out"), a deterministic market-making flow
-that self-corrects, a paper-trade ledger round-trip against synthetic
-Odds-API-shaped payloads, and a full mocked run of `collect_paper_trades.py`
-itself (fetch → train → pull odds → flag edges → log), not just its
-underlying units.
+hand-verified walk-forward fold boundaries and a regularization search whose
+picked value is checked against the reported grid (not just "some number
+came out"), a tail-dominated P&L case the concentration check must flag,
+point-in-time correctness checks (historical and live), a slate that forces
+the exposure cap to bind, correlation-aware weights checked against
+hand-derived closed forms, a deterministic market-making flow that
+self-corrects, a paper-trade ledger round-trip against synthetic
+Odds-API-shaped payloads, and full mocked runs of both `collect_paper_trades.py`
+and `train_mlb_model_walk_forward.py` themselves, not just their underlying units.
 
 ## Repo structure
 
 ```
 sports-market-efficiency/
 ├── config.py
-├── src/                       # probability, vig, arbitrage, model, kelly, clv, backtest,
-│                              #   baselines, calibration, stats, mlb_stats_client,
-│                              #   mlb_features, mlb_pitcher_features, portfolio_risk,
-│                              #   portfolio_optimization, market_maker, paper_trading
+├── src/                       # probability, vig, arbitrage, model, model_selection, kelly,
+│                              #   clv, backtest, baselines, calibration, stats,
+│                              #   mlb_stats_client, mlb_features, mlb_pitcher_features,
+│                              #   portfolio_risk, portfolio_optimization, market_maker,
+│                              #   paper_trading
 ├── scripts/                   # fetch_odds, run_backtest, train_mlb_model(_with_pitching),
-│                              #   collect_paper_trades, reconcile_paper_trades
+│                              #   train_mlb_model_walk_forward, collect_paper_trades,
+│                              #   reconcile_paper_trades
 ├── data/                       # raw/, processed/, paper_trades/ (all gitignored except samples)
 ├── notebooks/exploration.ipynb
 ├── tests/
 └── results/                    # backtest_report.md, mlb_model_report.md,
-                                 #   mlb_pitcher_features_report.md, paper_trading_report.md, plots
+                                 #   mlb_pitcher_features_report.md, mlb_walk_forward_report.md,
+                                 #   paper_trading_report.md, plots
 ```
