@@ -4,16 +4,21 @@ CLV track record that scripts/collect_paper_trades.py has been logging.
 
 Run this periodically (e.g. once a day) after games have had a chance to
 finish. For each still-open ledger row whose game has a final result from
-statsapi.mlb.com, this fills in the outcome and computes realized CLV/P&L.
+statsapi.mlb.com, this fills in the outcome and computes realized CLV/P&L
+using that row's `latest_odds` as the closing-price proxy.
 
-Closing-line caveat, stated plainly: "closing odds" here means the last price
-seen for that game in a fresh Odds API pull at the time this script runs, not
-the exact final tick before first pitch -- getting the literal closing tick
-would require a snapshot timed to run right at game time for every game,
-which this single periodic script doesn't attempt. If a game has already
-started or finished by the time this runs, no fresh price is available for
-it and CLV falls back to 0 (closing == placed) for that row rather than a
-fabricated number -- an honest gap, not a hidden one.
+Closing-line caveat, stated plainly: "closing odds" means the last price
+collect_paper_trades.py observed for that game before it started, not the
+exact final tick before first pitch -- getting the literal closing tick would
+need a snapshot timed to run right at game time for every game, which this
+periodic collection doesn't attempt. This script used to try to grab a
+closing price itself, with its own fresh odds pull at settle time -- that
+reliably failed, because by settle time a game has already started or
+finished and The Odds API no longer lists it (confirmed directly: the first
+six real settled trades all showed exactly 0.00pp CLV, `latest_odds` never
+having been refreshed after the initial log). Capturing the price is now
+collect_paper_trades.py's job, done while the game is still on the board;
+this script only reads what was already captured.
 
 Usage:
     python scripts/reconcile_paper_trades.py
@@ -28,8 +33,7 @@ import numpy as np
 
 import config
 from src.mlb_stats_client import fetch_completed_games
-from src.odds_client import OddsAPIClient
-from src.paper_trading import consensus_no_vig_prob, load_ledger, reconcile_paper_trades
+from src.paper_trading import load_ledger, reconcile_paper_trades
 from src.stats import bootstrap_ci
 
 DEFAULT_LEDGER_PATH = config.BASE_DIR / "data" / "paper_trades" / "mlb_paper_trades.csv"
@@ -37,7 +41,6 @@ DEFAULT_LEDGER_PATH = config.BASE_DIR / "data" / "paper_trades" / "mlb_paper_tra
 
 def main():
     parser = argparse.ArgumentParser(description="Settle open paper trades and report realized CLV")
-    parser.add_argument("--sport", default="baseball_mlb")
     parser.add_argument("--ledger", default=str(DEFAULT_LEDGER_PATH))
     args = parser.parse_args()
 
@@ -59,34 +62,8 @@ def main():
             (g["date"], g["home_team"], g["away_team"]): g["home_win"] for g in completed_games
         }
 
-        closing_odds_by_game = {}
-        try:
-            live_odds = OddsAPIClient().get_odds(sport=args.sport)
-            for game in live_odds:
-                consensus = consensus_no_vig_prob(game)
-                if consensus is None:
-                    continue
-                game_date = game.get("commence_time", "")[:10]
-                key = (game_date, game.get("home_team"), game.get("away_team"))
-                # Approximate closing odds from whichever book's h2h price is quoted
-                # first -- good enough for a "closer to close than placed_odds" proxy;
-                # see the module docstring for the honest limitation here.
-                for bookmaker in game.get("bookmakers", []):
-                    h2h = next((m for m in bookmaker.get("markets", []) if m.get("key") == "h2h"), None)
-                    if h2h is None:
-                        continue
-                    price = next(
-                        (o["price"] for o in h2h["outcomes"] if o.get("name") == game.get("home_team")), None
-                    )
-                    if price is not None:
-                        closing_odds_by_game[key] = price
-                        break
-        except Exception as exc:  # noqa: BLE001 -- reconciling results shouldn't fail just because odds are unavailable
-            print(f"Warning: couldn't fetch a fresh odds pull for closing prices ({exc}); "
-                  f"falling back to placed_odds (CLV=0) for newly-settled rows.")
-
         newly_settled_before = (ledger["status"] == "settled").sum()
-        ledger = reconcile_paper_trades(ledger, closing_odds_by_game, results_by_game)
+        ledger = reconcile_paper_trades(ledger, results_by_game)
         newly_settled = (ledger["status"] == "settled").sum() - newly_settled_before
         print(f"Settled {newly_settled} paper trade(s).")
 

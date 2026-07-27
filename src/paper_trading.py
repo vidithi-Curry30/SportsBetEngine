@@ -16,8 +16,20 @@ rather than worked around.
 
 Ledger schema (one row per flagged bet):
     game_date, home_team, away_team, snapshot_time, model_prob, no_vig_market_prob,
-    edge, book, placed_odds, stake_fraction, status ("open" | "settled"),
+    edge, book, placed_odds, latest_odds, stake_fraction, status ("open" | "settled"),
     closing_odds, result (1 = home team won), clv, pnl
+
+Closing-price capture, and the bug this fixed: reconcile_paper_trades.py used
+to do its own fresh odds pull at settle time to guess a closing price. That
+reliably failed -- once a game starts (let alone finishes), The Odds API stops
+listing it, so reconcile's own pull almost never found it and CLV silently
+fell back to placed_odds (observed directly: the first six real settled
+trades all showed exactly 0.00pp CLV). The fix: `latest_odds` is refreshed on
+every still-open row by `update_latest_odds` every time
+collect_paper_trades.py runs -- while the game is still upcoming and still on
+the board -- so whichever run happens closest to first pitch captures the
+price closest to the real closing line. Reconcile just reads that stored
+value; it no longer needs its own live pull at all.
 """
 from typing import Callable, Optional
 
@@ -32,7 +44,7 @@ from src.probability import american_to_probability, remove_vig
 
 LEDGER_COLUMNS = [
     "game_date", "home_team", "away_team", "snapshot_time", "model_prob",
-    "no_vig_market_prob", "edge", "book", "placed_odds", "stake_fraction",
+    "no_vig_market_prob", "edge", "book", "placed_odds", "latest_odds", "stake_fraction",
     "status", "closing_odds", "result", "clv", "pnl",
 ]
 
@@ -194,6 +206,7 @@ def build_paper_trade_rows(
                 "edge": edge["edge"],
                 "book": edge["best_book"],
                 "placed_odds": best_home_odds,
+                "latest_odds": best_home_odds,
                 "decimal_odds": decimal_odds,
                 "teams": (edge["home_team"], edge["away_team"]),
                 "status": "open",
@@ -226,7 +239,35 @@ def build_paper_trade_rows(
         del row["teams"]
 
     return rows
-    return rows
+
+
+def update_latest_odds(ledger: pd.DataFrame, odds_games: list[dict]) -> pd.DataFrame:
+    """Refresh `latest_odds` on every still-open ledger row whose game appears in
+    a fresh odds pull. Call this every time collect_paper_trades.py runs -- see
+    the module docstring for why this, not reconcile's own pull, is what makes
+    CLV real: this runs while a game is still upcoming and still on the board,
+    which is exactly the window reconcile (running after the fact) reliably
+    misses."""
+    if ledger.empty:
+        return ledger
+
+    ledger = ledger.copy()
+    games_by_key = {}
+    for game in odds_games:
+        game_date = game.get("commence_time", "")[:10]
+        games_by_key[(game_date, game.get("home_team"), game.get("away_team"))] = game
+
+    for idx, row in ledger.iterrows():
+        if row["status"] != "open":
+            continue
+        game = games_by_key.get((row["game_date"], row["home_team"], row["away_team"]))
+        if game is None:
+            continue
+        best_home = find_best_price(game, "home")
+        if best_home is not None:
+            ledger.at[idx, "latest_odds"] = best_home[1]
+
+    return ledger
 
 
 def load_ledger(path) -> pd.DataFrame:
@@ -260,15 +301,16 @@ def append_new_paper_trades(new_rows: list[dict], ledger: pd.DataFrame) -> pd.Da
 
 def reconcile_paper_trades(
     ledger: pd.DataFrame,
-    closing_odds_by_game: dict[tuple[str, str, str], int],
     results_by_game: dict[tuple[str, str, str], int],
 ) -> pd.DataFrame:
     """Settle every still-"open" ledger row whose game has a known result: fill in
-    closing_odds/result/clv/pnl and mark it "settled". `closing_odds_by_game` and
-    `results_by_game` are keyed by (game_date, home_team, away_team) -- the caller
-    builds these from the last odds snapshot observed before a game started and
-    mlb_stats_client.fetch_completed_games, respectively. Rows for games with no
-    known result yet are left untouched (still "open")."""
+    closing_odds/result/clv/pnl and mark it "settled". The closing price used is
+    each row's own `latest_odds` (kept fresh by update_latest_odds every time
+    collect_paper_trades.py runs -- see the module docstring), falling back to
+    placed_odds only if the game was never seen again after being logged.
+    `results_by_game` is keyed by (game_date, home_team, away_team), built from
+    mlb_stats_client.fetch_completed_games. Rows for games with no known result
+    yet are left untouched (still "open")."""
     ledger = ledger.copy()
 
     for idx, row in ledger.iterrows():
@@ -279,8 +321,8 @@ def reconcile_paper_trades(
             continue
 
         result = results_by_game[key]
-        closing_odds = closing_odds_by_game.get(key, row["placed_odds"])
-        clv = calculate_clv(int(row["placed_odds"]), int(closing_odds))
+        closing_odds = int(row["latest_odds"]) if pd.notna(row.get("latest_odds")) else int(row["placed_odds"])
+        clv = calculate_clv(int(row["placed_odds"]), closing_odds)
 
         decimal_odds = 1 + row["placed_odds"] / 100 if row["placed_odds"] > 0 else 1 + 100 / -row["placed_odds"]
         pnl = row["stake_fraction"] * (decimal_odds - 1) if result == 1 else -row["stake_fraction"]

@@ -87,17 +87,29 @@ python scripts/reconcile_paper_trades.py            # real MLB: settle + report
 
 `collect_paper_trades.py` fits a fresh model on all completed MLB games,
 pulls live multi-book odds, line-shops for the best price, compares the
-model to the consensus no-vig market price, and logs any flagged edge to
-`data/paper_trades/mlb_paper_trades.csv` at today's real price. Run it daily
-(or a few times a day near first pitch). `reconcile_paper_trades.py` (run
-after games finish) fetches the real result and a closing-price proxy, and
-writes `results/paper_trading_report.md`.
+model to the consensus no-vig market price, logs any flagged edge to
+`data/paper_trades/mlb_paper_trades.csv` at today's real price, and refreshes
+a `latest_odds` field on every still-open row using that same pull. Run it
+daily, ideally more (each run also updates every open bet's latest observed
+price, not just new ones). `reconcile_paper_trades.py` (run after games
+finish) fetches the real result and settles using each row's `latest_odds`
+as the closing-price proxy, and writes `results/paper_trading_report.md`.
 
 This is a stronger claim than the synthetic backtest, not a weaker one:
 leakage is structurally impossible since the bet is logged before the
 outcome exists. The tradeoff is sample size — it grows one slate at a time.
-**No results yet**: this was just built and hasn't run forward. Reporting a
-number now would mean fabricating it.
+
+**First real result, and a bug it caught in itself**: the first 6 paper
+trades settled at a 33% hit rate and a small negative return — meaningless
+on n=6, exactly the discipline this project applies everywhere else. More
+useful: CLV came back exactly 0.00pp on all six, which turned out to be a
+real measurement bug, not a finding — `reconcile_paper_trades.py` used to
+try its own fresh odds pull at settle time to guess a closing price, which
+reliably failed because a game drops off The Odds API once it starts. Fixed
+by moving closing-price capture into `collect_paper_trades.py` (via
+`latest_odds`, refreshed on every run while a game is still on the board);
+reconcile now just reads what was already captured. Caught by actually
+running the pipeline against real data, not by re-reading the code.
 
 ## Live data: verified against a real Odds API pull
 
@@ -294,7 +306,7 @@ cp .env.example .env   # add ODDS_API_KEY to pull live odds (optional)
 pytest
 ```
 
-207 tests, including hand-checked formula values, a planted arbitrage the
+212 tests, including hand-checked formula values, a planted arbitrage the
 scanner must detect, a chronological split the model must never leak across,
 hand-verified walk-forward fold boundaries and a regularization search whose
 picked value is checked against the reported grid (not just "some number

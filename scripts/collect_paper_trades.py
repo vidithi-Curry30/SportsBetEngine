@@ -34,7 +34,13 @@ from src.mlb_features import MLB_FEATURE_COLUMNS, MLB_TARGET_COLUMN, build_featu
 from src.mlb_stats_client import fetch_completed_games
 from src.model import train_model
 from src.odds_client import OddsAPIClient
-from src.paper_trading import append_new_paper_trades, build_paper_trade_rows, compute_live_edges, load_ledger
+from src.paper_trading import (
+    append_new_paper_trades,
+    build_paper_trade_rows,
+    compute_live_edges,
+    load_ledger,
+    update_latest_odds,
+)
 from src.utils import utc_now_iso
 
 DEFAULT_LEDGER_PATH = config.BASE_DIR / "data" / "paper_trades" / "mlb_paper_trades.csv"
@@ -72,9 +78,23 @@ def main():
     odds_games = OddsAPIClient().get_odds(sport=args.sport)
     print(f"{len(odds_games)} games returned")
 
+    ledger_path = Path(args.ledger)
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    ledger = load_ledger(ledger_path)
+
+    # Refresh latest_odds on every still-open row *before* anything else, using
+    # this run's odds pull -- regardless of whether today's pull flags any new
+    # edges. This is what lets reconcile_paper_trades.py compute real CLV: it
+    # needs a price captured while the game was still upcoming, which only a
+    # collection run (not reconcile, running after the fact) can capture.
+    open_before = int((ledger["status"] == "open").sum()) if not ledger.empty else 0
+    ledger = update_latest_odds(ledger, odds_games)
+
     edges = compute_live_edges(odds_games, feature_lookup, model, MLB_FEATURE_COLUMNS, edge_threshold=args.edge_threshold)
     if edges.empty:
         print("No games had both a usable model feature set and a consensus market price.")
+        ledger.to_csv(ledger_path, index=False)
+        print(f"Refreshed latest_odds for {open_before} open paper trade(s).")
         return
 
     _print_edge_report(edges)
@@ -82,15 +102,12 @@ def main():
     new_rows = build_paper_trade_rows(
         edges, snapshot_time=snapshot_time, max_slate_pct=args.max_slate_pct, sizing_strategy=args.sizing_strategy
     )
-    ledger_path = Path(args.ledger)
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
-
-    ledger = load_ledger(ledger_path)
     before = len(ledger)
     ledger = append_new_paper_trades(new_rows, ledger)
     ledger.to_csv(ledger_path, index=False)
 
-    print(f"\nLogged {len(ledger) - before} new paper trade(s) to {ledger_path} ({len(ledger)} total)")
+    print(f"\nRefreshed latest_odds for {open_before} open paper trade(s).")
+    print(f"Logged {len(ledger) - before} new paper trade(s) to {ledger_path} ({len(ledger)} total)")
 
 
 def _print_edge_report(edges) -> None:

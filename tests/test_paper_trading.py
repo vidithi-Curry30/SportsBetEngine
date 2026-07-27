@@ -10,6 +10,7 @@ from src.paper_trading import (
     find_best_price,
     load_ledger,
     reconcile_paper_trades,
+    update_latest_odds,
 )
 
 
@@ -199,6 +200,59 @@ class TestBuildPaperTradeRows:
         assert "teams" not in rows[0]
 
 
+class TestUpdateLatestOdds:
+    def test_refreshes_latest_odds_for_open_row_present_in_the_pull(self):
+        ledger = pd.DataFrame(
+            [
+                {
+                    "game_date": "2026-07-23", "home_team": "Boston Red Sox", "away_team": "New York Yankees",
+                    "placed_odds": -110, "latest_odds": -110, "status": "open",
+                }
+            ]
+        )
+        game = make_game("Boston Red Sox", "New York Yankees", books=[
+            make_book("BookA", "Boston Red Sox", "New York Yankees", -130, 110),
+        ])
+
+        updated = update_latest_odds(ledger, [game])
+        assert updated.iloc[0]["latest_odds"] == -130
+
+    def test_ignores_settled_rows(self):
+        ledger = pd.DataFrame(
+            [
+                {
+                    "game_date": "2026-07-23", "home_team": "Boston Red Sox", "away_team": "New York Yankees",
+                    "placed_odds": -110, "latest_odds": -110, "status": "settled",
+                }
+            ]
+        )
+        game = make_game("Boston Red Sox", "New York Yankees", books=[
+            make_book("BookA", "Boston Red Sox", "New York Yankees", -130, 110),
+        ])
+
+        updated = update_latest_odds(ledger, [game])
+        assert updated.iloc[0]["latest_odds"] == -110  # unchanged
+
+    def test_leaves_latest_odds_unchanged_when_game_not_in_pull(self):
+        # The exact scenario that motivated this function: a game that has
+        # already started/finished has dropped off the odds board.
+        ledger = pd.DataFrame(
+            [
+                {
+                    "game_date": "2026-07-23", "home_team": "Boston Red Sox", "away_team": "New York Yankees",
+                    "placed_odds": -110, "latest_odds": -110, "status": "open",
+                }
+            ]
+        )
+        updated = update_latest_odds(ledger, [])
+        assert updated.iloc[0]["latest_odds"] == -110
+
+    def test_empty_ledger_is_a_noop(self):
+        ledger = pd.DataFrame(columns=["game_date", "home_team", "away_team", "status", "latest_odds"])
+        result = update_latest_odds(ledger, [make_game("A", "B")])
+        assert result.empty
+
+
 class TestLedgerRoundTrip:
     def test_load_missing_ledger_returns_empty_frame_with_columns(self, tmp_path):
         ledger = load_ledger(tmp_path / "does_not_exist.csv")
@@ -214,36 +268,45 @@ class TestLedgerRoundTrip:
 
         assert len(ledger) == 1
 
-    def test_reconcile_settles_matching_open_rows(self):
-        ledger = pd.DataFrame(
+    def make_open_row(self, latest_odds=-110):
+        return pd.DataFrame(
             [
                 {
                     "game_date": "2026-07-23", "home_team": "A", "away_team": "B",
                     "snapshot_time": "t0", "model_prob": 0.6, "no_vig_market_prob": 0.5,
-                    "edge": 0.1, "book": "BookA", "placed_odds": -110, "stake_fraction": 0.05,
-                    "status": "open", "closing_odds": None, "result": None, "clv": None, "pnl": None,
+                    "edge": 0.1, "book": "BookA", "placed_odds": -110, "latest_odds": latest_odds,
+                    "stake_fraction": 0.05, "status": "open", "closing_odds": None,
+                    "result": None, "clv": None, "pnl": None,
                 }
             ]
         )
-        closing_odds = {("2026-07-23", "A", "B"): -130}
+
+    def test_reconcile_settles_matching_open_rows(self):
+        # latest_odds -130 stands in for a price update_latest_odds captured
+        # before the game started -- reconcile itself no longer does any pull.
+        ledger = self.make_open_row(latest_odds=-130)
         results = {("2026-07-23", "A", "B"): 1}  # home team (A) won
 
-        settled = reconcile_paper_trades(ledger, closing_odds, results)
+        settled = reconcile_paper_trades(ledger, results)
 
         assert settled.iloc[0]["status"] == "settled"
+        assert settled.iloc[0]["closing_odds"] == -130
         assert settled.iloc[0]["clv"] > 0  # bet at -110, closed at -130 -> line moved in your favor
         assert settled.iloc[0]["pnl"] > 0  # home team won
 
+    def test_reconcile_falls_back_to_placed_odds_when_latest_odds_never_updated(self):
+        # A game settled without ever having latest_odds refreshed (e.g. only
+        # collected once, right before the game started) -- CLV should come out
+        # exactly 0, the honest fallback, not a crash or a fabricated number.
+        ledger = self.make_open_row(latest_odds=None)
+        results = {("2026-07-23", "A", "B"): 1}
+
+        settled = reconcile_paper_trades(ledger, results)
+
+        assert settled.iloc[0]["closing_odds"] == -110
+        assert settled.iloc[0]["clv"] == pytest.approx(0.0)
+
     def test_reconcile_leaves_unresolved_games_open(self):
-        ledger = pd.DataFrame(
-            [
-                {
-                    "game_date": "2026-07-23", "home_team": "A", "away_team": "B",
-                    "snapshot_time": "t0", "model_prob": 0.6, "no_vig_market_prob": 0.5,
-                    "edge": 0.1, "book": "BookA", "placed_odds": -110, "stake_fraction": 0.05,
-                    "status": "open", "closing_odds": None, "result": None, "clv": None, "pnl": None,
-                }
-            ]
-        )
-        settled = reconcile_paper_trades(ledger, {}, {})
+        ledger = self.make_open_row()
+        settled = reconcile_paper_trades(ledger, {})
         assert settled.iloc[0]["status"] == "open"
