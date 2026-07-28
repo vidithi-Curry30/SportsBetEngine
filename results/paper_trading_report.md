@@ -2,7 +2,7 @@
 
 Unlike results/backtest_report.md, every row here is a real bet logged at a real, live market price *before* the game was played -- not a synthetic backtest. Leakage is structurally impossible: the paper trade is written to the ledger by scripts/collect_paper_trades.py before the outcome exists. The tradeoff is sample size: this only grows by one slate at a time.
 
-Total paper trades logged: 6 (6 settled, 0 still open)
+Total paper trades logged: 16 (6 settled, 10 still open)
 
 ## Results
 
